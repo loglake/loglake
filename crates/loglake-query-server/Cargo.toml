@@ -9,6 +9,12 @@ description = "HTTP query server: SPL/SQL JSON endpoints over the loglake Iceber
 name = "loglake-query-server"
 path = "src/main.rs"
 
+[features]
+# See the identical feature on `loglake-cli`: the routes come from
+# loglake-core, but `--enable-prof` is a property of the jemalloc that this
+# crate's `#[global_allocator]` links, so both halves belong here.
+profiling = ["loglake-core/profiling", "tikv-jemallocator/profiling"]
+
 [dependencies]
 loglake-bloom = { workspace = true }
 loglake-core = { workspace = true }
