@@ -13,7 +13,7 @@
 # Environment overrides:
 #   LOGLAKE_RELEASE       Helm release name (default: loglake)
 #   LOGLAKE_NAMESPACE     k8s namespace     (default: loglake)
-#   LOGLAKE_IMAGE_TAG     image tag to deploy (default: 0.1.0)
+#   LOGLAKE_IMAGE_TAG     image tag to deploy (default: 0.1.1)
 #   LOGLAKE_VALUES_EXTRA  path to additional values file (default: ./config/values.smoke.yaml)
 #   TF_DIR               terraform working dir (default: deploy/terraform/aws)
 #
@@ -29,7 +29,7 @@ CHART_DIR="$ROOT/deploy/helm/loglake"
 
 RELEASE="${LOGLAKE_RELEASE:-loglake}"
 NAMESPACE="${LOGLAKE_NAMESPACE:-loglake}"
-IMAGE_TAG="${LOGLAKE_IMAGE_TAG:-0.1.0}"
+IMAGE_TAG="${LOGLAKE_IMAGE_TAG:-0.1.1}"
 VALUES_EXTRA="${LOGLAKE_VALUES_EXTRA:-$HERE/config/values.smoke.yaml}"
 case "$VALUES_EXTRA" in
   /*) ;;
