@@ -23,7 +23,10 @@ in [`ARCHITECTURE.md`](ARCHITECTURE.md).
   at the floor is nothing. The floor pod therefore deserializes an index per
   text query again unless `LOGLAKE_PARSED_INDEX_CACHE_MAX_BYTES` and
   `LOGLAKE_PUFFIN_BLOB_CACHE_MAX_BYTES` are set by hand, trading the decode
-  reservation for warm indexes; 5Gi buys both. The caps above 16Gi are policy
+  reservation for warm indexes; 5Gi buys both. A pod in that state is now
+  visible rather than inferred: every acquisition is a `miss` on
+  `loglake_iceberg_parsed_index_cache_lookups_total` with no eviction beside it,
+  which is the shape the "Text-index startup" panels were added for (#3969). The caps above 16Gi are policy
   rather than measurement: nothing has sized a working set larger than the
   three or four compacted files 1 GiB of parsed indexes holds. Whether the
   serialized copy earns its share at all is a separate open question: since a
