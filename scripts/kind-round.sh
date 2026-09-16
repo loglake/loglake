@@ -361,8 +361,14 @@ expected = {
         ("loglake_compactor_watchdog_trips_total", {"stage": "agg_fold"}),
         ("loglake_compactor_watchdog_trips_total", {"stage": "recluster"}),
         ("loglake_compactor_watchdog_trips_total", {"stage": "delete_tasks"}),
-        ("loglake_group_count_delta_write_failures_total", {"table": "events"}),
-        ("loglake_side_aggregate_publish_failures_total", {"table": "events"}),
+        (
+            "loglake_group_count_delta_write_failures_total",
+            {"iceberg_namespace": "loglake", "table": "events"},
+        ),
+        (
+            "loglake_side_aggregate_publish_failures_total",
+            {"iceberg_namespace": "loglake", "table": "events"},
+        ),
         ("loglake_wal_crc_mismatch_total", {}),
     ],
 }
