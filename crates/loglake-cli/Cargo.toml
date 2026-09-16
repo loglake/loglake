@@ -1,0 +1,47 @@
+[package]
+name = "loglake-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "loglake CLI: smoke-test ingest and query for the loglake storage layer."
+
+[[bin]]
+name = "loglake"
+path = "src/main.rs"
+
+[dependencies]
+reqwest = { workspace = true }
+rustyline = { workspace = true }
+loglake-core = { workspace = true }
+loglake-storage = { workspace = true }
+loglake-wal = { workspace = true }
+loglake-ingest = { workspace = true }
+loglake-compactor = { workspace = true }
+
+anyhow = { workspace = true }
+metrics = { workspace = true }
+clap = { workspace = true }
+chrono = { workspace = true }
+datafusion = { workspace = true }
+iceberg = { workspace = true }
+object_store = { workspace = true }
+opendal = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+url = "2"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+async-trait = { workspace = true }
+uuid = { workspace = true }
+tikv-jemallocator = "0.7.0"
+
+[dev-dependencies]
+arrow-array = { workspace = true }
+axum = { workspace = true }
+serde_json = { workspace = true }
+tempfile = "3"
+tokio = { workspace = true }
+tower = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,12 @@
+[package]
+name = "loglake-index"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Per-file inverted index (term → row-ordinal postings) for exact term search + row-level pruning."
+
+[dependencies]
+loglake-bloom = { workspace = true }
+
+[lints]
+workspace = true

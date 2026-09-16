@@ -1,0 +1,19 @@
+{{- if .Values.podDisruptionBudget.enabled -}}
+{{- range $role := list "ingester" "compactor" "query" }}
+{{- $cv := index $.Values $role }}
+{{- if and $cv.enabled (gt (int $cv.replicas) 1) }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "loglake.componentName" (list $ $role) }}
+  labels:
+    {{- include "loglake.componentLabels" (list $ $role) | nindent 4 }}
+spec:
+  minAvailable: {{ default (sub (int $cv.replicas) 1) (index $.Values.podDisruptionBudget.minAvailable $role) }}
+  selector:
+    matchLabels:
+      {{- include "loglake.componentSelectorLabels" (list $ $role) | nindent 6 }}
+{{- end }}
+{{- end }}
+{{- end }}
