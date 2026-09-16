@@ -3847,6 +3847,7 @@ dependencies = [
  "clap",
  "datafusion",
  "iceberg",
+ "libc",
  "loglake-compactor",
  "loglake-core",
  "loglake-ingest",
