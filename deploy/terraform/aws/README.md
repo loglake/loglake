@@ -80,7 +80,7 @@ terraform output -raw helm_values > /tmp/loglake.values.yaml
 helm install loglake ../../helm/loglake \
   --kube-context "$KUBE_CONTEXT" \
   -n loglake -f /tmp/loglake.values.yaml \
-  --set image.tag=0.1.0 \
+  --set image.tag=0.1.1 \
   --set wal.storageClassName=efs-sc
 ```
 
