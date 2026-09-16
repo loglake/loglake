@@ -9,6 +9,14 @@ description = "loglake CLI: smoke-test ingest and query for the loglake storage 
 name = "loglake"
 path = "src/main.rs"
 
+[features]
+# Passthrough for a profiling build (`deploy/Dockerfile` with `PROFILING=1`).
+# Two halves, and BOTH have to be here rather than in loglake-core: the routes
+# come from loglake-core, but `--enable-prof` is a property of the jemalloc that
+# *this* crate's `#[global_allocator]` links, so loglake-core cannot turn it on.
+# Without the second half the heap route answers 412.
+profiling = ["loglake-core/profiling", "tikv-jemallocator/profiling"]
+
 [dependencies]
 reqwest = { workspace = true }
 rustyline = { workspace = true }
