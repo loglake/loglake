@@ -244,7 +244,8 @@ crates/
   loglake-bloom        trigram/token blooms
   loglake-cli          the `loglake` binary (all roles + ops commands:
                        audit-rotate, gc-orphans, retention-sweep,
-                       delete-sweep, migrate-schema, wal-recover, …)
+                       delete-sweep, migrate-schema, wal-recover,
+                       wal-requeue, …)
   loglake-operator     Kubernetes operator
   loglake-openapi      emits the committed OpenAPI 3.1 specs (docs/api/)
   loglake-bench (private, not in the public tree) / -loadgen   tooling
