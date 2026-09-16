@@ -204,7 +204,9 @@ async fn expiry_re_roots_the_coverage_edge_instead_of_orphaning_it() {
     );
 
     let side = read_side(tmp.path());
-    let rerooted = side.coverage.expect("the expiry must leave a coverage edge");
+    let rerooted = side
+        .coverage
+        .expect("the expiry must leave a coverage edge");
     assert_ne!(
         rerooted, covered,
         "the expired snapshot is still named by the edge, so the chain is orphaned"
@@ -307,7 +309,10 @@ async fn the_rebuild_restores_tier_1_after_a_delete_task() {
         .expect("windowed histogram");
 
     let report = ice.rebuild_inline_time_aggregates(INDEX).await.unwrap();
-    assert!(report.published, "the rebuild published nothing: {report:?}");
+    assert!(
+        report.published,
+        "the rebuild published nothing: {report:?}"
+    );
     assert!(
         report.time_buckets_restored,
         "time buckets short of {} rows: {:?}",
@@ -345,7 +350,8 @@ async fn a_rebuild_on_a_recluster_survives_the_next_append() {
     // The pre-#2920 shape: counts with no provable edge, on a table whose
     // newest snapshot is a re-cluster.
     let path = aggregate_dir(&tmp.path().join("warehouse")).join("loglake-aggregates.json");
-    let mut doc: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let mut doc: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     let obj = doc.as_object_mut().unwrap();
     assert!(obj.remove("coverage").is_some());
     obj.remove("coverage_links");
