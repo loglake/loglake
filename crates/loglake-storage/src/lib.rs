@@ -21,9 +21,8 @@ pub mod subscribe;
 
 pub use query_provider::{
     settle_scan_partitions, CancelOnDrop, ClippedScanLimit, LoglakeIcebergTableScan,
-    OrderedMergeGlobalBudget,
-    OrderedResidualHint, OrderedScanLimit, OrderedScanTuning, PreferredScanOrder, QueryCancel,
-    ScanPartitionTracker, ScanSettle, ScanShard,
+    OrderedMergeGlobalBudget, OrderedResidualHint, OrderedScanLimit, OrderedScanTuning,
+    PreferredScanOrder, QueryCancel, ScanPartitionTracker, ScanSettle, ScanShard,
 };
 
 /// Arrow field-metadata key carrying the configured text tokenizer name for a
