@@ -19,7 +19,7 @@ members = [
 version = "0.1.1"
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/limnion-ai/loglake"
+repository = "https://github.com/loglake/loglake"
 
 # Cancellation-safety / reliability lints (WS-0). Held as `deny` because a
 # `std`/`parking_lot` lock guard kept alive across an `.await` is always a bug
