@@ -1,0 +1,5 @@
+# TYPE loglake_query_scan_file_cache_populate_rows summary
+loglake_query_scan_file_cache_populate_rows{outcome="clipped",quantile="0.5"} 256
+loglake_query_scan_file_cache_populate_rows{outcome="clipped",quantile="0.99"} 1024
+loglake_query_scan_file_cache_populate_rows_sum{outcome="clipped"} 5000
+loglake_query_scan_file_cache_populate_rows_count{outcome="clipped"} 16
