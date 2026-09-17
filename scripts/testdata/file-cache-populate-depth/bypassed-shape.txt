@@ -1,0 +1,7 @@
+# HELP loglake_query_scan_file_cache_requests_total Decoded-file-cache request outcomes.
+# TYPE loglake_query_scan_file_cache_requests_total counter
+loglake_query_scan_file_cache_requests_total{outcome="hit"} 0
+loglake_query_scan_file_cache_requests_total{outcome="miss"} 0
+loglake_query_scan_file_cache_requests_total{outcome="bypass"} 192
+loglake_query_scan_file_cache_requests_total{outcome="insert"} 0
+loglake_query_scan_file_cache_requests_total{outcome="abandoned"} 0

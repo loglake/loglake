@@ -1,0 +1,19 @@
+# HELP loglake_query_scan_file_cache_populate_rows Rows handed to one decoded-file-cache population.
+# TYPE loglake_query_scan_file_cache_populate_rows histogram
+loglake_query_scan_file_cache_populate_rows_bucket{outcome="cancelled",le="0"} 0
+loglake_query_scan_file_cache_populate_rows_bucket{outcome="cancelled",le="1"} 0
+loglake_query_scan_file_cache_populate_rows_bucket{outcome="cancelled",le="100"} 0
+loglake_query_scan_file_cache_populate_rows_bucket{outcome="cancelled",le="1000"} 1
+loglake_query_scan_file_cache_populate_rows_bucket{outcome="cancelled",le="8192"} 1
+loglake_query_scan_file_cache_populate_rows_bucket{outcome="cancelled",le="32768"} 1
+loglake_query_scan_file_cache_populate_rows_bucket{outcome="cancelled",le="65536"} 1
+loglake_query_scan_file_cache_populate_rows_bucket{outcome="cancelled",le="131071"} 1
+loglake_query_scan_file_cache_populate_rows_bucket{outcome="cancelled",le="131072"} 1
+loglake_query_scan_file_cache_populate_rows_bucket{outcome="cancelled",le="262144"} 1
+loglake_query_scan_file_cache_populate_rows_bucket{outcome="cancelled",le="524288"} 1
+loglake_query_scan_file_cache_populate_rows_bucket{outcome="cancelled",le="1048576"} 1
+loglake_query_scan_file_cache_populate_rows_bucket{outcome="cancelled",le="4194304"} 1
+loglake_query_scan_file_cache_populate_rows_bucket{outcome="cancelled",le="16777216"} 1
+loglake_query_scan_file_cache_populate_rows_bucket{outcome="cancelled",le="+Inf"} 1
+loglake_query_scan_file_cache_populate_rows_sum{outcome="cancelled"} 256
+loglake_query_scan_file_cache_populate_rows_count{outcome="cancelled"} 1
