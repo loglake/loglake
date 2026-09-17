@@ -222,7 +222,10 @@ async fn file_cache_budget_measurement() {
             let started = std::time::Instant::now();
             let got = row_count(&ctx, SCAN_SQL).await;
             timings.push(started.elapsed().as_secs_f64() * 1000.0);
-            assert_eq!(got, expected, "{arm} run {run} returned {got} of {expected} rows");
+            assert_eq!(
+                got, expected,
+                "{arm} run {run} returned {got} of {expected} rows"
+            );
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             let delta = Counters::read(&snapshotter);
             if run == 0 {
@@ -291,7 +294,14 @@ fn file_cache_budget_table() {
     );
     println!(
         "{:>6} {:>10} {:>8} {:>10} {:>10} {:>11} {:>11} {:>10}",
-        "pod", "rec_bytes", "entries", "pool_off", "pool_on", "headroom_off", "headroom_on", "holds_cold"
+        "pod",
+        "rec_bytes",
+        "entries",
+        "pool_off",
+        "pool_on",
+        "headroom_off",
+        "headroom_on",
+        "holds_cold"
     );
     for limit_gib in [2u64, 4, 8, 16, 32, 64] {
         let limit = limit_gib * GIB;

@@ -498,7 +498,8 @@ mod memory_budget_tests {
         // while the cache is off.
         let floor = 4 * GIB;
         let (recommended, _) = loglake_storage::derive_file_cache_limits(Some(floor)).unwrap();
-        let on = loglake_storage::memory_budget_with_file_cache(Some(floor), 0.5, Some(recommended));
+        let on =
+            loglake_storage::memory_budget_with_file_cache(Some(floor), 0.5, Some(recommended));
         assert!(
             mb(on.pool) < 1280,
             "the 4Gi pod kept its {} MB decode reservation while also holding a \
