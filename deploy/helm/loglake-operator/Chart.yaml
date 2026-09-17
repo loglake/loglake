@@ -7,9 +7,9 @@ description: |
 type: application
 version: 0.1.1
 appVersion: "0.1.1"
-home: https://github.com/limnion-ai/loglake
+home: https://github.com/loglake/loglake
 sources:
-  - https://github.com/limnion-ai/loglake
+  - https://github.com/loglake/loglake
 keywords:
   - loglake
   - operator
