@@ -2374,7 +2374,8 @@ fn print_process_rss(label: &str) {
 
 #[test]
 fn rss_reads_the_two_status_fields_in_bytes() {
-    let status = "Name:\tpuffin_rebuild\nVmPeak:\t 1234 kB\nVmRSS:\t    2048 kB\nVmHWM:\t 4096 kB\n";
+    let status =
+        "Name:\tpuffin_rebuild\nVmPeak:\t 1234 kB\nVmRSS:\t    2048 kB\nVmHWM:\t 4096 kB\n";
     assert_eq!(
         rss_bytes_from(status),
         (Some(2048 * 1024), Some(4096 * 1024))
