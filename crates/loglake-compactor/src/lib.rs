@@ -5931,7 +5931,9 @@ const AUTO_PROMOTE_SAMPLE_ROWS: usize = 4096;
 /// and a fixed 300s cadence between sampling runs.
 fn auto_promote_min_fraction() -> f64 {
     auto_promote_min_fraction_from(
-        std::env::var("LOGLAKE_AUTO_PROMOTE_MIN_PCT").ok().as_deref(),
+        std::env::var("LOGLAKE_AUTO_PROMOTE_MIN_PCT")
+            .ok()
+            .as_deref(),
     )
 }
 

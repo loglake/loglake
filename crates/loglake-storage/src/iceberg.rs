@@ -6267,10 +6267,17 @@ impl SampledKeys {
         } else if self.keys.len() >= self.cap {
             self.dropped_keys += 1;
         } else {
-            self.keys
-                .insert(key, (1, merge_sampled_kind(None, value)));
+            self.keys.insert(key, (1, merge_sampled_kind(None, value)));
         }
     }
+}
+
+/// Is this threshold an off switch? Zero is the shipped default; a negative or
+/// NaN one reaches here only from a caller that bypassed the compactor's
+/// resolver, and the safe reading of an unusable threshold is "promote
+/// nothing".
+fn threshold_is_off(min_fraction: f64) -> bool {
+    min_fraction.is_nan() || min_fraction <= 0.0
 }
 
 /// Pure selection step of auto-promotion: which columns this pass would ADD,
@@ -6293,7 +6300,7 @@ fn select_promotions(
     max_columns: usize,
     name_in_schema: &dyn Fn(&str) -> bool,
 ) -> Vec<loglake_core::PromotedColumn> {
-    if census.rows == 0 || existing.len() >= max_columns || !(min_fraction > 0.0) {
+    if census.rows == 0 || existing.len() >= max_columns || threshold_is_off(min_fraction) {
         return Vec::new();
     }
     let already: std::collections::HashSet<&str> =
@@ -6309,7 +6316,7 @@ fn select_promotions(
         })
         .collect();
     // Hottest first; deterministic tie-break by name.
-    candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
 
     let mut taken: std::collections::HashSet<String> =
         existing.iter().map(|c| c.name.clone()).collect();
@@ -6382,10 +6389,6 @@ mod auto_promotion_sampling_tests {
         c
     }
 
-    fn json(v: serde_json::Value) -> serde_json::Value {
-        v
-    }
-
     fn no_schema_collision(_: &str) -> bool {
         false
     }
@@ -6393,11 +6396,7 @@ mod auto_promotion_sampling_tests {
     #[test]
     fn kind_lattice_widens_int_to_float_and_nothing_else() {
         use serde_json::json as j;
-        let merge = |values: &[serde_json::Value]| {
-            values
-                .iter()
-                .fold(None, |acc, v| merge_sampled_kind(acc, v))
-        };
+        let merge = |values: &[serde_json::Value]| values.iter().fold(None, merge_sampled_kind);
         assert_eq!(merge(&[j!(1), j!(2)]), Some(SampledKind::Int));
         assert_eq!(merge(&[j!(1), j!(2.5)]), Some(SampledKind::Float));
         assert_eq!(merge(&[j!(2.5), j!(1)]), Some(SampledKind::Float));
@@ -6411,7 +6410,7 @@ mod auto_promotion_sampling_tests {
         // key rather than being skipped. Pinned, not endorsed — see #3052's
         // finding on null-poisoning.
         assert_eq!(merge(&[j!([1, 2])]), Some(SampledKind::Mixed));
-        assert_eq!(merge(&[j!("a"), json(serde_json::Value::Null)]), Some(SampledKind::Mixed));
+        assert_eq!(merge(&[j!("a"), j!(null)]), Some(SampledKind::Mixed));
         assert_eq!(
             SampledKind::Mixed.promoted_type(),
             None,
@@ -6443,8 +6442,14 @@ mod auto_promotion_sampling_tests {
     #[test]
     fn nested_leaves_are_counted_by_dotted_key() {
         let c = census(&[Some(r#"{"http":{"status":500,"host":"a"},"k":"v"}"#)]);
-        assert_eq!(c.keys.get("http.status").map(|s| s.1), Some(Some(SampledKind::Int)));
-        assert_eq!(c.keys.get("http.host").map(|s| s.1), Some(Some(SampledKind::Str)));
+        assert_eq!(
+            c.keys.get("http.status").map(|s| s.1),
+            Some(Some(SampledKind::Int))
+        );
+        assert_eq!(
+            c.keys.get("http.host").map(|s| s.1),
+            Some(Some(SampledKind::Str))
+        );
         assert!(
             !c.keys.contains_key("http"),
             "the object itself is not a candidate: {:?}",
@@ -6479,7 +6484,10 @@ mod auto_promotion_sampling_tests {
         // one hit in a 100-row sample is 1%, under the threshold.
         let promoted = select_promotions(&c, &[], 0.02, 64, &no_schema_collision);
         assert_eq!(
-            promoted.iter().map(|c| c.attr_key.as_str()).collect::<Vec<_>>(),
+            promoted
+                .iter()
+                .map(|c| c.attr_key.as_str())
+                .collect::<Vec<_>>(),
             vec!["hot"]
         );
     }
@@ -6521,7 +6529,10 @@ mod auto_promotion_sampling_tests {
         ]);
         let picked = select_promotions(&c, &[], 0.5, 2, &no_schema_collision);
         assert_eq!(
-            picked.iter().map(|c| c.attr_key.as_str()).collect::<Vec<_>>(),
+            picked
+                .iter()
+                .map(|c| c.attr_key.as_str())
+                .collect::<Vec<_>>(),
             vec!["hot", "a"],
             "hottest first, then name — and the ceiling cuts the rest"
         );
@@ -6577,11 +6588,10 @@ mod auto_promotion_sampling_tests {
             .collect();
         assert_eq!(picked, vec!["small-new", "mid-a", "mid-b", "big-old"]);
         // No timestamp bound anywhere ⇒ largest first, the old behaviour.
-        let sizeless: Vec<String> =
-            newest_sample_files(vec![f(None, 1, "s"), f(None, 9, "l")], 2)
-                .into_iter()
-                .map(|c| c.path)
-                .collect();
+        let sizeless: Vec<String> = newest_sample_files(vec![f(None, 1, "s"), f(None, 9, "l")], 2)
+            .into_iter()
+            .map(|c| c.path)
+            .collect();
         assert_eq!(sizeless, vec!["l", "s"]);
         // A zero limit still samples one file rather than nothing.
         assert_eq!(newest_sample_files(files, 0).len(), 1);
@@ -12448,6 +12458,13 @@ impl IcebergContext {
     /// Deliberately conservative: scalar single-kind values only (Int widens
     /// to Float; any other mix stays residual), sanitized names that don't
     /// collide with existing schema columns, and never demotes.
+    ///
+    /// This is the one path that mutates a schema with no operator in the
+    /// loop, and additive widening cannot be undone, so it ships off and its
+    /// bounds carry the argument: see
+    /// `docs/DESIGN_auto_promotion_qualification.md` for the thresholds, the
+    /// measured per-pass and per-column cost, and what a default-on decision
+    /// would still need.
     pub async fn auto_promote_hot_keys(
         &self,
         min_fraction: f64,
@@ -12466,6 +12483,13 @@ impl IcebergContext {
             .await?;
         for config in self.list_indexes().await.unwrap_or_default() {
             let ident = self.index_table_ident(&config.index_id);
+            // `list_indexes` reports the events table among the indexes, and
+            // its ident is this namespace's `table_ident` — sampling it again
+            // would pay a second pass over the same files to reach the
+            // verdict already reached above.
+            if ident == self.table_ident {
+                continue;
+            }
             newly.extend(
                 self.auto_promote_hot_keys_for(
                     &ident,
@@ -12497,7 +12521,7 @@ impl IcebergContext {
         // Both are hard off-switches, checked before any IO: an operator who
         // sets the ceiling to zero, or a table already at it, must not pay a
         // sampling pass for a verdict that cannot promote anything.
-        if existing.len() >= max_columns || !(min_fraction > 0.0) {
+        if existing.len() >= max_columns || threshold_is_off(min_fraction) {
             return Ok(Vec::new());
         }
         let schema = entry.table.metadata().current_schema();
@@ -12562,13 +12586,10 @@ impl IcebergContext {
                 .increment(census.dropped_keys as u64);
         }
 
-        let promoted_now = select_promotions(
-            &census,
-            &existing,
-            min_fraction,
-            max_columns,
-            &|name| schema.field_id_by_name(name).is_some(),
-        );
+        let promoted_now =
+            select_promotions(&census, &existing, min_fraction, max_columns, &|name| {
+                schema.field_id_by_name(name).is_some()
+            });
         if promoted_now.is_empty() {
             return Ok(Vec::new());
         }

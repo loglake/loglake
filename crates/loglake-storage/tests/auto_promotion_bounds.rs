@@ -68,7 +68,10 @@ async fn a_zero_threshold_leaves_the_schema_untouched() {
         .await
         .unwrap();
     ice.append_events(&events(200, |i| {
-        format!(r#"{{"k8s.namespace":"prod","http.status":{}}}"#, 200 + i % 3)
+        format!(
+            r#"{{"k8s.namespace":"prod","http.status":{}}}"#,
+            200 + i % 3
+        )
     }))
     .await
     .unwrap();
@@ -76,7 +79,10 @@ async fn a_zero_threshold_leaves_the_schema_untouched() {
     let before = schema_fingerprint(&ice).await;
     assert_eq!(before.1, None, "a fresh table carries no promotions");
 
-    let newly = ice.auto_promote_hot_keys(0.0, 16, FILES, ROWS).await.unwrap();
+    let newly = ice
+        .auto_promote_hot_keys(0.0, 16, FILES, ROWS)
+        .await
+        .unwrap();
     assert!(newly.is_empty(), "{newly:?}");
     assert_eq!(
         schema_fingerprint(&ice).await,
@@ -86,7 +92,10 @@ async fn a_zero_threshold_leaves_the_schema_untouched() {
 
     // Negative control: the same fixture with the feature ON does promote,
     // so the assertion above is about the threshold and not about the data.
-    let newly = ice.auto_promote_hot_keys(0.5, 16, FILES, ROWS).await.unwrap();
+    let newly = ice
+        .auto_promote_hot_keys(0.5, 16, FILES, ROWS)
+        .await
+        .unwrap();
     assert_eq!(newly.len(), 2, "{newly:?}");
     assert_ne!(schema_fingerprint(&ice).await, before);
 }
@@ -105,7 +114,10 @@ async fn a_zero_column_ceiling_leaves_the_schema_untouched() {
         .unwrap();
 
     let before = schema_fingerprint(&ice).await;
-    let newly = ice.auto_promote_hot_keys(0.5, 0, FILES, ROWS).await.unwrap();
+    let newly = ice
+        .auto_promote_hot_keys(0.5, 0, FILES, ROWS)
+        .await
+        .unwrap();
     assert!(newly.is_empty(), "{newly:?}");
     assert_eq!(schema_fingerprint(&ice).await, before);
 }
@@ -133,7 +145,10 @@ async fn the_column_ceiling_bounds_one_pass_and_the_next() {
         .unwrap();
 
     let (before, _) = schema_fingerprint(&ice).await;
-    let newly = ice.auto_promote_hot_keys(0.5, 5, FILES, ROWS).await.unwrap();
+    let newly = ice
+        .auto_promote_hot_keys(0.5, 5, FILES, ROWS)
+        .await
+        .unwrap();
     assert_eq!(newly.len(), 5, "{newly:?}");
     let (after, property) = schema_fingerprint(&ice).await;
     assert_eq!(
@@ -148,8 +163,10 @@ async fn the_column_ceiling_bounds_one_pass_and_the_next() {
 
     // At the ceiling, the next pass is a no-op — it does not even re-declare
     // the list it already holds.
-    let again = ice.auto_promote_hot_keys(0.5, 5, FILES, ROWS).await.unwrap();
+    let again = ice
+        .auto_promote_hot_keys(0.5, 5, FILES, ROWS)
+        .await
+        .unwrap();
     assert!(again.is_empty(), "{again:?}");
     assert_eq!(schema_fingerprint(&ice).await.0, after);
 }
-
