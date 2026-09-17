@@ -3210,7 +3210,10 @@ mod consumer_watermark_tests {
         let empty = std::collections::BTreeSet::new();
         let swept = sweep_committed_gated(dir, ZERO, ZERO, HUGE, Some(&empty)).unwrap();
         assert_eq!(swept.deleted, 1);
-        assert_eq!(swept.unmarked, 1, "the unreclaimable object must be counted");
+        assert_eq!(
+            swept.unmarked, 1,
+            "the unreclaimable object must be counted"
+        );
         assert!(committed_names(dir).is_empty());
     }
 

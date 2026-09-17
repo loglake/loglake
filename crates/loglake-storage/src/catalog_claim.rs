@@ -3527,7 +3527,6 @@ mod crash_window_tests {
         // And a committed row can never be requeued by the other branch.
         assert_eq!(c.requeue_claims(&["s4".to_string()]).await.unwrap(), 0);
     }
-
 }
 
 #[cfg(test)]
@@ -3584,16 +3583,18 @@ mod local_commit_mark_tests {
         assert_eq!(url, "wal-mirror/reg.arrow", "the uploader's key is the key");
         assert_eq!(row(&c, "absent").await.unwrap().0, "committed");
         // The late registration loses, as `register` is insert-ignore.
-        assert!(
-            !c.register("absent", "default", "", "wal-mirror/absent.arrow", 1, 1)
-                .await
-                .unwrap()
-        );
+        assert!(!c
+            .register("absent", "default", "", "wal-mirror/absent.arrow", 1, 1)
+            .await
+            .unwrap());
         assert_eq!(row(&c, "absent").await.unwrap().0, "committed");
         // Both are now purgeable by the unchanged retention pass.
         let purgeable = c.purgeable_committed(Duration::ZERO, 10).await.unwrap();
         let keys: Vec<&str> = purgeable.iter().map(|(_, k)| k.as_str()).collect();
-        assert_eq!(keys, vec!["wal-mirror/reg.arrow", "wal-mirror/absent.arrow"]);
+        assert_eq!(
+            keys,
+            vec!["wal-mirror/reg.arrow", "wal-mirror/absent.arrow"]
+        );
     }
 
     /// The mark runs every cycle for as long as the file is in `committed/`.
@@ -3606,7 +3607,11 @@ mod local_commit_mark_tests {
         let first = row(&c, "s").await.unwrap().1.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         let marked = c.mark_committed_local(&[local("s")]).await.unwrap();
-        assert_eq!(marked, vec!["s".to_string()], "idempotent, and still durable");
+        assert_eq!(
+            marked,
+            vec!["s".to_string()],
+            "idempotent, and still durable"
+        );
         assert_eq!(row(&c, "s").await.unwrap().1.unwrap(), first);
     }
 
