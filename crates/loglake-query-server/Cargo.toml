@@ -3,7 +3,7 @@ name = "loglake-query-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "HTTP query server: SPL/SQL JSON endpoints over the loglake Iceberg warehouse."
+description = "HTTP query server: SQL JSON endpoints over the loglake Iceberg warehouse."
 
 [[bin]]
 name = "loglake-query-server"
