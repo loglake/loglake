@@ -38,12 +38,24 @@ jobs:
         run: |
           REF="${{ github.event.inputs.tag || github.ref_name }}"
           echo "TAG=${REF#v}" >> "$GITHUB_ENV"
+      # The commit the checkout above selected, which is not github.sha: a
+      # manual dispatch runs the workflow from its own revision and publishes a
+      # different one. Neither Dockerfile copies Git metadata, so without this
+      # value crates/loglake-core/build.rs records `unknown` and a released
+      # binary cannot be told from a later fix by `--version` or
+      # loglake_build_info. Must stay after the checkout, and must not be the
+      # tag: the tag is what the image is called, the commit is what is in it.
+      # scripts/check-release-provenance.py executes this step against a
+      # synthetic release checkout under both triggers.
+      - name: Resolve release revision
+        run: echo "REVISION=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
       - name: Build and push loglake
         uses: docker/build-push-action@v7
         with:
           context: .
           file: deploy/Dockerfile
           push: true
+          build-args: LOGLAKE_GIT_SHA=${{ env.REVISION }}
           tags: |
             ghcr.io/limnion-ai/loglake:${{ env.TAG }}
             ghcr.io/limnion-ai/loglake:latest
@@ -55,6 +67,7 @@ jobs:
           context: .
           file: deploy/Dockerfile.operator
           push: true
+          build-args: LOGLAKE_GIT_SHA=${{ env.REVISION }}
           tags: |
             ghcr.io/limnion-ai/loglake-operator:${{ env.TAG }}
             ghcr.io/limnion-ai/loglake-operator:latest
