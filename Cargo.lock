@@ -4019,7 +4019,9 @@ dependencies = [
 name = "loglake-index"
 version = "0.1.1"
 dependencies = [
+ "crc32fast",
  "loglake-bloom",
+ "zstd",
 ]
 
 [[package]]
