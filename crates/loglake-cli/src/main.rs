@@ -2896,7 +2896,7 @@ fn print_recovery_plan(plan: &loglake_wal::mirror::RecoveryPlan, from: &str, to:
 /// becomes [`LedgerVerdict::Unavailable`] so the plan can be PRINTED with the
 /// reason on it before the run bails. The bail itself is the caller's.
 async fn attach_catalog_verdict(plan: &mut loglake_wal::mirror::RecoveryPlan, uri: &str) {
-    use loglake_wal::mirror::{LedgerRow, LedgerVerdict};
+    use loglake_wal::mirror::LedgerVerdict;
 
     let reader = match loglake_storage::wal_ledger::WalLedgerReader::open(uri).await {
         Ok(reader) => reader,
@@ -2925,22 +2925,6 @@ async fn attach_catalog_verdict(plan: &mut loglake_wal::mirror::RecoveryPlan, ur
         "wal-recover: looked the listed segment ids up in wal_segments, read-only"
     );
     reader.close().await;
-    // The two crates keep their own spelling of a row — `loglake-wal` has no
-    // catalog dependency — so the three identity columns are named across
-    // here, once.
-    let rows = rows
-        .into_iter()
-        .map(|(id, row)| {
-            (
-                id,
-                LedgerRow {
-                    tenant: row.tenant,
-                    index_id: row.index_id,
-                    segment_url: row.segment_url,
-                },
-            )
-        })
-        .collect();
     let verdict = loglake_wal::mirror::ledger_verdict(&plan.listed, &rows);
     plan.attach_ledger(verdict);
 }
