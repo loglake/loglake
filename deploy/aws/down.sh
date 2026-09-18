@@ -6,6 +6,9 @@
 # so subsequent smoke runs can skip the longest apply steps. Use
 # LOGLAKE_DOWN_MODE=all for a full terraform destroy.
 #
+# LOGLAKE_DOWN_MODE is validated before step 1, so an unknown mode leaves the
+# cluster and the bucket alone.
+#
 # Steps 1-3 are best-effort; each command logs but doesn't bail on the next.
 # Step 4 is not: a failed destroy exits nonzero and "down complete" is only
 # printed after terraform succeeded.
@@ -33,6 +36,18 @@ DOWN_MODE="${LOGLAKE_DOWN_MODE:-cluster}"
 EMPTY_WAREHOUSE="${EMPTY_WAREHOUSE:-}"
 
 log() { printf '==> %s\n' "$*" >&2; }
+
+# Settle the mode before anything writes to the cluster. The check used to sit
+# on the destroy's `case` at the end, so a typo'd LOGLAKE_DOWN_MODE uninstalled
+# the release and deleted the namespace, destroyed nothing in AWS, and exited 1:
+# the smoke run gone and the billing resources still up.
+case "$DOWN_MODE" in
+  cluster | all) ;;
+  *)
+    echo "ERROR: LOGLAKE_DOWN_MODE must be 'cluster' or 'all' (got '$DOWN_MODE')" >&2
+    exit 1
+    ;;
+esac
 
 if [ -z "$EMPTY_WAREHOUSE" ]; then
   if [ "$DOWN_MODE" = "cluster" ]; then
@@ -154,7 +169,10 @@ case "$DOWN_MODE" in
     terraform destroy -input=false -auto-approve || destroy_rc=$?
     ;;
   *)
-    echo "ERROR: LOGLAKE_DOWN_MODE must be 'cluster' or 'all' (got '$DOWN_MODE')" >&2
+    # Unreachable: the mode was settled above, before the cleanup steps. Left
+    # as a backstop so a future arm added to one `case` and not the other
+    # cannot fall through to "down complete" with nothing destroyed.
+    echo "ERROR: unhandled LOGLAKE_DOWN_MODE '$DOWN_MODE'" >&2
     exit 1
     ;;
 esac
