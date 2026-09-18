@@ -4198,6 +4198,7 @@ dependencies = [
  "loglake-bloom",
  "loglake-core",
  "loglake-index",
+ "loglake-wal",
  "metrics",
  "metrics-util",
  "object_store",
