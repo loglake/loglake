@@ -50,6 +50,8 @@
 //! - `new_output`: Create output file for writing.
 
 mod file_io;
+/// Object-store read phase attribution and immutable-read single flight.
+pub mod read_observability;
 mod storage;
 
 pub use file_io::*;

@@ -86,19 +86,49 @@ Recorded 2026-09-19:
 - Production stays on Iceberg 0.9.1, OpenDAL 0.55 and reqsign 0.16 until the
   adoption slice.
 
+## Slice 4 ledger — scan attribution and immutable read caches
+
+Recorded 2026-09-19:
+
+- `ScanMetrics` and caller-supplied `ScanCounters` share one counter set. Data
+  and delete-file reads enter that set once, after a physical read succeeds.
+- The modular Parquet reader labels footer, page-index and data ranges at the
+  read site. Its existing coalescing and concurrency controls remain the only
+  range controls; a coalesced range is charged as one read and its fetched
+  length is charged once.
+- Parsed Parquet metadata is cached by immutable path and page-index option
+  set. The option set is part of the key so a footer opened without page
+  indexes cannot satisfy a later positional-delete read that needs them.
+- The raw immutable-object cache is byte-bounded, rejects entries larger than
+  its budget and excludes mutable WAL paths. Concurrent identical misses share
+  one population; failure or cancellation releases ownership for a retry.
+- Whole-file and range-cache hits spend Tokio cooperative budget. A hand-poll
+  fixture proves a warm loop parks on that budget and completes when the budget
+  is lifted.
+- Puffin metadata and decompressed blobs have separate bounded caches. Puffin
+  misses use the same weak single-flight contract, and oversized blobs are
+  refused before insertion.
+- Cold, warm and parsed-cache-bypassed reads return the same rows. Counted
+  readers cover coalesced data attribution and delete-file bytes; the candidate
+  library suite passes 1,396 tests.
+- Production remains on the 0.9.1 reader until the adoption slice. The private
+  pre-squash rebase note is historical; this ledger is the public candidate
+  evidence for the slice.
+
 ## Refreshed divergence inventory
 
 The candidate core now carries the slice-2 catalog, transaction and Parquet
-writer behavior plus the slice-3 OpenDAL upload controls. Its packaging changes
-also gate the four `iceberg-storage-opendal` external-service tests described
-above. The schema and expiry caller differences remain in `adapter/src/lib.rs`;
-the candidate credential adapter is in `adapter/src/aws_credential.rs`.
+writer behavior, the slice-3 OpenDAL upload controls, and slice-4 reader caches
+and counters. Its packaging changes also gate the four
+`iceberg-storage-opendal` external-service tests described above. The schema
+and expiry caller differences remain in `adapter/src/lib.rs`; the candidate
+credential adapter is in `adapter/src/aws_credential.rs`.
 
 Upstream 0.10.1 now supplies schema evolution and snapshot expiry, so those two
 local actions do not move forward. The remaining production divergences still
-need later slices: reader pruning/caches/order/counters, segmented-index
-publication and final dependency adoption. Refresh the file inventory
-against the package sources with:
+need later slices: reader pruning and order, decoded reverse chunks,
+segmented-index publication and final dependency adoption. Refresh the file
+inventory against the package sources with:
 
 ```sh
 diff -rq --exclude=.cargo-ok --exclude=.cargo_vcs_info.json \

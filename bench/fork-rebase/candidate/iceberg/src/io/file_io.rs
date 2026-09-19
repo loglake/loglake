@@ -15,8 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
-use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
@@ -25,6 +27,152 @@ use super::storage::{
     LocalFsStorageFactory, MemoryStorageFactory, Storage, StorageConfig, StorageFactory,
 };
 use crate::Result;
+use crate::io::read_observability::ReadDebouncer;
+
+fn object_cache_max_atomic() -> &'static AtomicU64 {
+    static MAX: OnceLock<AtomicU64> = OnceLock::new();
+    MAX.get_or_init(|| {
+        let configured = std::env::var("LOGLAKE_OBJECT_CACHE_BYTES")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0);
+        AtomicU64::new(configured)
+    })
+}
+
+fn object_cache_max_bytes() -> u64 {
+    object_cache_max_atomic().load(Ordering::Relaxed)
+}
+
+/// Set the process-wide immutable byte-range cache budget. Zero disables it.
+pub fn set_object_cache_max_bytes(max_bytes: u64) {
+    object_cache_max_atomic().store(max_bytes, Ordering::Relaxed);
+}
+
+fn object_cache_cacheable(path: &str) -> bool {
+    !path.contains("/wal-mirror/") && !path.contains("/_active/")
+}
+
+#[derive(Default)]
+struct ByteRangeCache {
+    bytes: u64,
+    order: VecDeque<String>,
+    entries: HashMap<String, Bytes>,
+}
+
+impl ByteRangeCache {
+    fn get(&self, key: &str) -> Option<Bytes> {
+        self.entries.get(key).cloned()
+    }
+
+    fn insert(&mut self, key: String, value: Bytes, max_bytes: u64) {
+        let len = value.len() as u64;
+        if len > max_bytes {
+            return;
+        }
+        if self.entries.contains_key(&key) {
+            return;
+        }
+        self.entries.insert(key.clone(), value);
+        self.bytes = self.bytes.saturating_add(len);
+        self.order.push_back(key);
+        while self.bytes > max_bytes {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            if let Some(evicted) = self.entries.remove(&oldest) {
+                self.bytes = self.bytes.saturating_sub(evicted.len() as u64);
+            }
+        }
+    }
+}
+
+fn byte_range_cache() -> &'static Mutex<ByteRangeCache> {
+    static CACHE: OnceLock<Mutex<ByteRangeCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(ByteRangeCache::default()))
+}
+
+fn object_cache_get(key: &str) -> Option<Bytes> {
+    let hit = byte_range_cache().lock().ok()?.get(key);
+    metrics::counter!(
+        "loglake_object_cache_requests_total",
+        "outcome" => if hit.is_some() { "hit" } else { "miss" }
+    )
+    .increment(1);
+    hit
+}
+
+async fn object_cache_hit(hit: Bytes) -> Bytes {
+    tokio::task::coop::consume_budget().await;
+    hit
+}
+
+fn object_cache_put(key: String, value: Bytes, max_bytes: u64) {
+    if let Ok(mut cache) = byte_range_cache().lock() {
+        cache.insert(key, value, max_bytes);
+        metrics::gauge!("loglake_object_cache_bytes").set(cache.bytes as f64);
+    }
+}
+
+#[derive(Clone)]
+struct CachedPopulation {
+    bytes: Bytes,
+    attribution: Arc<AtomicBool>,
+}
+
+fn range_read_debouncer() -> &'static ReadDebouncer<String, CachedPopulation> {
+    static DEBOUNCER: OnceLock<ReadDebouncer<String, CachedPopulation>> = OnceLock::new();
+    DEBOUNCER.get_or_init(ReadDebouncer::default)
+}
+
+struct CachingFileRead {
+    inner: Arc<dyn FileRead>,
+    path: String,
+    max_bytes: u64,
+}
+
+#[async_trait::async_trait]
+impl FileRead for CachingFileRead {
+    async fn read(&self, range: Range<u64>) -> crate::Result<Bytes> {
+        Ok(self.read_with_outcome(range).await?.bytes)
+    }
+
+    async fn read_with_outcome(&self, range: Range<u64>) -> crate::Result<ReadOutcome> {
+        let key = format!("{}@{}-{}", self.path, range.start, range.end);
+        if let Some(hit) = object_cache_get(&key) {
+            return Ok(ReadOutcome {
+                bytes: object_cache_hit(hit).await,
+                fetched: false,
+            });
+        }
+
+        let inner = Arc::clone(&self.inner);
+        let operation_key = key.clone();
+        let cache_key = key.clone();
+        let max_bytes = self.max_bytes;
+        let population = range_read_debouncer()
+            .run(operation_key, "immutable_range", move || async move {
+                if let Some(hit) = object_cache_get(&cache_key) {
+                    return Ok(CachedPopulation {
+                        bytes: object_cache_hit(hit).await,
+                        attribution: Arc::new(AtomicBool::new(false)),
+                    });
+                }
+                let bytes = inner.read(range).await?;
+                object_cache_put(cache_key, bytes.clone(), max_bytes);
+                Ok(CachedPopulation {
+                    bytes,
+                    attribution: Arc::new(AtomicBool::new(true)),
+                })
+            })
+            .await?;
+        let fetched = population.attribution.swap(false, Ordering::AcqRel);
+        Ok(ReadOutcome {
+            bytes: population.bytes,
+            fetched,
+        })
+    }
+}
 
 /// FileIO implementation, used to manipulate files in underlying storage.
 ///
@@ -253,6 +401,23 @@ pub trait FileRead: Send + Sync + Unpin + 'static {
     ///
     /// TODO: we can support reading non-contiguous bytes in the future.
     async fn read(&self, range: Range<u64>) -> crate::Result<Bytes>;
+
+    /// Read a range and report whether this call populated bytes from storage.
+    /// Cache wrappers override this so scan metrics count physical reads once.
+    async fn read_with_outcome(&self, range: Range<u64>) -> crate::Result<ReadOutcome> {
+        Ok(ReadOutcome {
+            bytes: self.read(range).await?,
+            fetched: true,
+        })
+    }
+}
+
+/// Result of a range read with physical-fetch attribution.
+pub struct ReadOutcome {
+    /// Returned bytes.
+    pub bytes: Bytes,
+    /// True for exactly one caller when storage was accessed.
+    pub fetched: bool,
 }
 
 #[async_trait::async_trait]
@@ -260,10 +425,14 @@ impl<T: AsRef<dyn FileRead> + Send + Sync + Unpin + 'static> FileRead for T {
     async fn read(&self, range: Range<u64>) -> crate::Result<Bytes> {
         self.as_ref().read(range).await
     }
+
+    async fn read_with_outcome(&self, range: Range<u64>) -> crate::Result<ReadOutcome> {
+        self.as_ref().read_with_outcome(range).await
+    }
 }
 
 /// Input file is used for reading from files.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct InputFile {
     storage: Arc<dyn Storage>,
     // Absolute path of file.
@@ -295,6 +464,33 @@ impl InputFile {
     ///
     /// For continuous reading, use [`Self::reader`] instead.
     pub async fn read(&self) -> crate::Result<Bytes> {
+        let max_bytes = object_cache_max_bytes();
+        if max_bytes > 0 && object_cache_cacheable(&self.path) {
+            let key = format!("{}@whole", self.path);
+            if let Some(hit) = object_cache_get(&key) {
+                return Ok(object_cache_hit(hit).await);
+            }
+            let storage = Arc::clone(&self.storage);
+            let path = self.path.clone();
+            let cache_key = key.clone();
+            return range_read_debouncer()
+                .run(key, "immutable_whole", move || async move {
+                    if let Some(hit) = object_cache_get(&cache_key) {
+                        return Ok(CachedPopulation {
+                            bytes: object_cache_hit(hit).await,
+                            attribution: Arc::new(AtomicBool::new(false)),
+                        });
+                    }
+                    let bytes = storage.read(&path).await?;
+                    object_cache_put(cache_key, bytes.clone(), max_bytes);
+                    Ok(CachedPopulation {
+                        bytes,
+                        attribution: Arc::new(AtomicBool::new(true)),
+                    })
+                })
+                .await
+                .map(|population| population.bytes);
+        }
         self.storage.read(&self.path).await
     }
 
@@ -302,7 +498,17 @@ impl InputFile {
     ///
     /// For one-time reading, use [`Self::read`] instead.
     pub async fn reader(&self) -> crate::Result<Box<dyn FileRead>> {
-        self.storage.reader(&self.path).await
+        let inner = self.storage.reader(&self.path).await?;
+        let max_bytes = object_cache_max_bytes();
+        if max_bytes > 0 && object_cache_cacheable(&self.path) {
+            Ok(Box::new(CachingFileRead {
+                inner: Arc::from(inner),
+                path: self.path.clone(),
+                max_bytes,
+            }))
+        } else {
+            Ok(inner)
+        }
     }
 }
 
@@ -390,6 +596,7 @@ mod tests {
     use std::io::Write;
     use std::path::Path;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use bytes::Bytes;
     use futures::AsyncReadExt;
@@ -397,10 +604,71 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{FileIO, FileIOBuilder};
-    use crate::io::{LocalFsStorageFactory, MemoryStorageFactory};
+    use crate::io::{FileRead, LocalFsStorageFactory, MemoryStorageFactory};
 
     fn create_local_file_io() -> FileIO {
         FileIO::new_with_fs()
+    }
+
+    #[derive(Debug)]
+    struct CountedRead {
+        bytes: Bytes,
+        reads: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl FileRead for CountedRead {
+        async fn read(&self, range: std::ops::Range<u64>) -> crate::Result<Bytes> {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            tokio::task::yield_now().await;
+            Ok(self.bytes.slice(range.start as usize..range.end as usize))
+        }
+    }
+
+    #[tokio::test]
+    async fn immutable_range_cache_is_single_flight_and_cooperative() {
+        super::set_object_cache_max_bytes(64 * 1024 * 1024);
+        let reads = Arc::new(AtomicUsize::new(0));
+        let payload = Bytes::from_static(b"candidate immutable bytes");
+        let reader = Arc::new(super::CachingFileRead {
+            inner: Arc::new(CountedRead {
+                bytes: payload.clone(),
+                reads: Arc::clone(&reads),
+            }),
+            path: "memory://candidate/single-flight-1752.parquet".to_string(),
+            max_bytes: 64 * 1024 * 1024,
+        });
+        let len = payload.len() as u64;
+
+        let (left, right) = tokio::join!(reader.read(0..len), reader.read(0..len));
+        assert_eq!(left.unwrap(), payload);
+        assert_eq!(right.unwrap(), payload);
+        assert_eq!(reads.load(Ordering::Relaxed), 1);
+
+        let hits = std::pin::pin!(async {
+            for _ in 0..1_000 {
+                assert_eq!(reader.read(0..len).await.unwrap(), payload);
+            }
+        });
+        assert!(
+            futures::poll!(hits).is_pending(),
+            "warm-cache loops must spend tokio cooperative budget"
+        );
+        assert_eq!(reads.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn immutable_range_cache_enforces_byte_bound_and_rejects_oversized_entries() {
+        let mut cache = super::ByteRangeCache::default();
+        cache.insert("a".into(), Bytes::from_static(b"aaaa"), 6);
+        cache.insert("b".into(), Bytes::from_static(b"bbbb"), 6);
+        assert!(cache.get("a").is_none());
+        assert_eq!(cache.get("b").unwrap(), Bytes::from_static(b"bbbb"));
+        assert!(cache.bytes <= 6);
+
+        cache.insert("oversized".into(), Bytes::from_static(b"1234567"), 6);
+        assert!(cache.get("oversized").is_none());
+        assert!(cache.bytes <= 6);
     }
 
     fn write_to_file<P: AsRef<Path>>(s: &str, path: P) {
