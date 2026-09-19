@@ -115,19 +115,65 @@ Recorded 2026-09-19:
   pre-squash rebase note is historical; this ledger is the public candidate
   evidence for the slice.
 
+## Slice 5: pruning with exact filtering
+
+Recorded 2026-09-19:
+
+- The modular candidate reader accepts `RawPruneSpec` and
+  `PromotedPruneSpec`. File and row-group trigram blooms, inline and Puffin v1
+  inverted indexes, and promoted Utf8 min/max statistics now narrow reads.
+- Scan planning attaches table-metadata statistics blobs to their data-file
+  tasks. Puffin discovery checks the blob's data-file and column properties,
+  and refuses a row-group-size stamp that does not describe the Parquet file.
+- Every hint is conservative. A missing or malformed bloom/index, a missing
+  promoted column in a pre-promotion file, and an index query the format cannot
+  answer all fall back to the scan. The caller's predicate remains exact; the
+  production boundary at `crates/loglake-storage/src/query_provider.rs` stays
+  on the complete 0.9.1 reader until adoption.
+- Bloom, predicate-statistics, inverted-index, page-index and positional-delete
+  selections compose by intersection. The per-scan counters require a
+  selective case to report file, row-group or row pruning, so an implementation
+  that disables every hint does not pass the matrix.
+- Puffin footer/blob caches honor the reader's measurement bypass. The v1 index
+  load has the production concurrency bound, with the environment parsing
+  covered through a pure resolver.
+- The candidate library suite passes 1,400 unit tests and 85 doctests (12
+  ignored).
+
+The focused matrix covers:
+
+| Shape | Equality check | Required pruning evidence |
+| --- | --- | --- |
+| token, substring and OR terms | enabled rows equal the exact filter over the disabled scan, cold, warm and bypassed | inverted selection drops rows |
+| promoted equality | exact equality over the hinted scan equals the disabled scan | a disjoint row group is counted under statistics pruning |
+| null/OR predicate | the modular predicate suite checks Kleene `IS NULL OR` filtering | filter-only fields are collected and evaluated |
+| absent/malformed metadata and pre-promotion files | fall back to the disabled result | no false-negative selection is built |
+| inline and Puffin indexes | cold, warm and bypassed lookups return the same postings | both storage paths build selective row selections |
+| stale Puffin stamp | falls back to the exact scan | the stale index is not used |
+| row-group and positional-delete intersection | the final selection contains only live indexed rows | both mechanisms remove rows |
+
+Focused commands:
+
+```sh
+cargo test --manifest-path bench/fork-rebase/Cargo.toml -p iceberg \
+  arrow::reader::pruning::tests
+cargo test --manifest-path bench/fork-rebase/Cargo.toml -p iceberg \
+  arrow::reader::row_filter::tests::test_kleene_logic_or_behaviour
+```
+
 ## Refreshed divergence inventory
 
 The candidate core now carries the slice-2 catalog, transaction and Parquet
-writer behavior, the slice-3 OpenDAL upload controls, and slice-4 reader caches
-and counters. Its packaging changes also gate the four
+writer behavior, the slice-3 OpenDAL upload controls, slice-4 reader caches and
+counters, and slice-5 pruning. Its packaging changes also gate the four
 `iceberg-storage-opendal` external-service tests described above. The schema
 and expiry caller differences remain in `adapter/src/lib.rs`; the candidate
 credential adapter is in `adapter/src/aws_credential.rs`.
 
 Upstream 0.10.1 now supplies schema evolution and snapshot expiry, so those two
 local actions do not move forward. The remaining production divergences still
-need later slices: reader pruning and order, decoded reverse chunks,
-segmented-index publication and final dependency adoption. Refresh the file
+need later slices: ordered reading, decoded reverse chunks, segmented-index
+publication and final dependency adoption. Refresh the file
 inventory against the package sources with:
 
 ```sh

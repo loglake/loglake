@@ -174,6 +174,7 @@ fn blob_cache_put(key: BlobKey, bytes: Arc<[u8]>) {
 pub struct PuffinReader {
     input_file: InputFile,
     file_metadata: OnceCell<Arc<FileMetadata>>,
+    cache_bypass: bool,
 }
 
 impl PuffinReader {
@@ -182,7 +183,14 @@ impl PuffinReader {
         Self {
             input_file,
             file_metadata: OnceCell::new(),
+            cache_bypass: false,
         }
+    }
+
+    /// Bypass process-global immutable metadata and blob caches.
+    pub fn with_cache_bypass(mut self, cache_bypass: bool) -> Self {
+        self.cache_bypass = cache_bypass;
+        self
     }
 
     /// Returns file metadata
@@ -190,20 +198,25 @@ impl PuffinReader {
         self.file_metadata
             .get_or_try_init(|| async {
                 let path = self.input_file.location().to_string();
-                if let Some(metadata) = metadata_cache_get(&path) {
+                if !self.cache_bypass
+                    && let Some(metadata) = metadata_cache_get(&path)
+                {
                     tokio::task::coop::consume_budget().await;
                     return Ok(metadata);
                 }
                 let input_file = self.input_file.clone();
                 let cache_path = path.clone();
+                let cache_bypass = self.cache_bypass;
                 metadata_debouncer()
                     .run(path, "puffin_metadata", move || async move {
-                        if let Some(metadata) = metadata_cache_get(&cache_path) {
+                        if !cache_bypass && let Some(metadata) = metadata_cache_get(&cache_path) {
                             tokio::task::coop::consume_budget().await;
                             return Ok(metadata);
                         }
                         let metadata = Arc::new(FileMetadata::read(&input_file).await?);
-                        metadata_cache_put(cache_path, metadata.clone());
+                        if !cache_bypass {
+                            metadata_cache_put(cache_path, metadata.clone());
+                        }
                         Ok(metadata)
                     })
                     .await
@@ -222,7 +235,9 @@ impl PuffinReader {
             path: self.input_file.location().to_string(),
             offset: start,
         };
-        let data = if let Some(hit) = blob_cache_get(&key) {
+        let data = if !self.cache_bypass
+            && let Some(hit) = blob_cache_get(&key)
+        {
             metrics::counter!(
                 "loglake_iceberg_puffin_blob_cache_lookups_total",
                 "outcome" => "hit"
@@ -239,9 +254,10 @@ impl PuffinReader {
             let input_file = self.input_file.clone();
             let codec = blob_metadata.compression_codec;
             let cache_key = key.clone();
+            let cache_bypass = self.cache_bypass;
             blob_debouncer()
                 .run(key, "puffin_blob", move || async move {
-                    if let Some(hit) = blob_cache_get(&cache_key) {
+                    if !cache_bypass && let Some(hit) = blob_cache_get(&cache_key) {
                         tokio::task::coop::consume_budget().await;
                         return Ok(hit);
                     }
@@ -255,7 +271,9 @@ impl PuffinReader {
                         );
                     }
                     let data = Arc::<[u8]>::from(codec.decompress(outcome.bytes.to_vec())?);
-                    blob_cache_put(cache_key, data.clone());
+                    if !cache_bypass {
+                        blob_cache_put(cache_key, data.clone());
+                    }
                     Ok(data)
                 })
                 .await?

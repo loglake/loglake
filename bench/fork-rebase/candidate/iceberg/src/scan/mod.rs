@@ -23,6 +23,7 @@ mod context;
 use context::*;
 mod task;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
@@ -61,6 +62,35 @@ pub struct TableScanBuilder<'a> {
     concurrency_limit_manifest_files: usize,
     row_group_filtering_enabled: bool,
     row_selection_enabled: bool,
+}
+
+fn statistics_blobs_by_file(
+    metadata: &crate::spec::TableMetadata,
+) -> HashMap<String, Vec<StatisticsBlobReference>> {
+    let mut by_file: HashMap<String, Vec<StatisticsBlobReference>> = HashMap::new();
+    for statistics in metadata.statistics_iter() {
+        for blob in &statistics.blob_metadata {
+            let Some(data_file) = blob.properties.get("data_file") else {
+                continue;
+            };
+            by_file
+                .entry(data_file.clone())
+                .or_default()
+                .push(StatisticsBlobReference {
+                    statistics_path: statistics.statistics_path.clone(),
+                    blob_type: blob.r#type.clone(),
+                    properties: blob.properties.clone(),
+                });
+        }
+    }
+    for blobs in by_file.values_mut() {
+        blobs.sort_by(|left, right| {
+            left.statistics_path
+                .cmp(&right.statistics_path)
+                .then(left.blob_type.cmp(&right.blob_type))
+        });
+    }
+    by_file
 }
 
 impl<'a> TableScanBuilder<'a> {
@@ -313,6 +343,7 @@ impl<'a> TableScanBuilder<'a> {
             partition_filter_cache: Arc::new(PartitionFilterCache::new()),
             manifest_evaluator_cache: Arc::new(ManifestEvaluatorCache::new()),
             expression_evaluator_cache: Arc::new(ExpressionEvaluatorCache::new()),
+            statistics_blobs_by_file: Arc::new(statistics_blobs_by_file(self.table.metadata())),
         };
 
         Ok(TableScan {

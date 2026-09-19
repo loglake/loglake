@@ -28,8 +28,8 @@ use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
 use parquet::arrow::{PARQUET_FIELD_ID_META_KEY, ParquetRecordBatchStreamBuilder};
 
 use super::{
-    ArrowFileReader, ArrowReader, ParquetReadOptions, add_fallback_field_ids_to_arrow_schema,
-    apply_name_mapping_to_arrow_schema,
+    ArrowFileReader, ArrowReader, ParquetReadOptions, PromotedPruneSpec, RawPruneSpec,
+    add_fallback_field_ids_to_arrow_schema, apply_name_mapping_to_arrow_schema,
 };
 use crate::arrow::caching_delete_file_loader::CachingDeleteFileLoader;
 use crate::arrow::int96::coerce_int96_timestamps;
@@ -63,6 +63,8 @@ impl ArrowReader {
             parquet_read_options: self.parquet_read_options,
             scan_metrics: scan_metrics.clone(),
             cache_bypass: self.cache_bypass,
+            raw_prune_spec: self.raw_prune_spec,
+            promoted_prune: self.promoted_prune,
         };
 
         // Fast-path for single concurrency to avoid overhead of try_flatten_unordered
@@ -105,6 +107,8 @@ struct FileScanTaskReader {
     parquet_read_options: ParquetReadOptions,
     scan_metrics: ScanMetrics,
     cache_bypass: bool,
+    raw_prune_spec: Option<RawPruneSpec>,
+    promoted_prune: Vec<PromotedPruneSpec>,
 }
 
 impl FileScanTaskReader {
@@ -132,6 +136,16 @@ impl FileScanTaskReader {
             .counters()
             .files_read
             .fetch_add(1, Ordering::Relaxed);
+
+        if let Some(spec) = self.raw_prune_spec.as_ref()
+            && !ArrowReader::file_might_match_prune_spec(arrow_metadata.metadata(), spec)
+        {
+            self.scan_metrics
+                .counters()
+                .files_pruned_bloom
+                .fetch_add(1, Ordering::Relaxed);
+            return Ok(Box::pin(futures::stream::empty()));
+        }
 
         // Check if Parquet file has embedded field IDs
         // Corresponds to Java's ParquetSchemaUtil.hasIds()
@@ -320,6 +334,45 @@ impl FileScanTaskReader {
             Vec::len,
         );
 
+        if let Some(spec) = self.raw_prune_spec.as_ref()
+            && let Some(survivors) = ArrowReader::rowgroup_bloom_survivors_for_spec(
+                record_batch_stream_builder.metadata(),
+                spec,
+            )
+        {
+            selected_row_group_indices = Some(match selected_row_group_indices {
+                Some(existing) => existing
+                    .into_iter()
+                    .filter(|index| survivors.contains(index))
+                    .collect(),
+                None => survivors,
+            });
+        }
+        let row_groups_after_bloom = selected_row_group_indices.as_ref().map_or(
+            record_batch_stream_builder.metadata().num_row_groups(),
+            Vec::len,
+        );
+
+        if !self.promoted_prune.is_empty() {
+            let metadata = record_batch_stream_builder.metadata();
+            let candidates: Vec<usize> = selected_row_group_indices
+                .clone()
+                .unwrap_or_else(|| (0..metadata.num_row_groups()).collect());
+            selected_row_group_indices = Some(
+                candidates
+                    .into_iter()
+                    .filter(|index| {
+                        self.promoted_prune.iter().all(|spec| {
+                            ArrowReader::row_group_might_match_promoted(
+                                metadata.row_group(*index),
+                                spec,
+                            )
+                        })
+                    })
+                    .collect(),
+            );
+        }
+
         if let Some(predicate) = final_predicate {
             let (iceberg_field_ids, field_id_map) = ArrowReader::build_field_id_set_and_map(
                 record_batch_stream_builder.parquet_schema(),
@@ -393,6 +446,23 @@ impl FileScanTaskReader {
             };
         }
 
+        if let Some(spec) = self.raw_prune_spec.as_ref()
+            && let Some(index_selection) = ArrowReader::inverted_index_row_selection(
+                &self.file_io,
+                &task,
+                record_batch_stream_builder.metadata(),
+                &selected_row_group_indices,
+                spec,
+                self.cache_bypass,
+            )
+            .await?
+        {
+            row_selection = Some(match row_selection {
+                None => index_selection,
+                Some(existing) => existing.intersection(&index_selection),
+            });
+        }
+
         let row_group_count = record_batch_stream_builder.metadata().num_row_groups();
         let row_groups_read = selected_row_group_indices
             .as_ref()
@@ -401,8 +471,12 @@ impl FileScanTaskReader {
         counters
             .row_groups_considered
             .fetch_add(row_groups_in_scope as u64, Ordering::Relaxed);
+        counters.row_groups_pruned_bloom.fetch_add(
+            row_groups_in_scope.saturating_sub(row_groups_after_bloom) as u64,
+            Ordering::Relaxed,
+        );
         counters.row_groups_pruned_stats.fetch_add(
-            row_groups_in_scope.saturating_sub(row_groups_read) as u64,
+            row_groups_after_bloom.saturating_sub(row_groups_read) as u64,
             Ordering::Relaxed,
         );
         counters
