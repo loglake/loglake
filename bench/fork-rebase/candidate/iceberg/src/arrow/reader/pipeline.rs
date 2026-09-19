@@ -23,10 +23,17 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use futures::{StreamExt, TryStreamExt};
-use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
-use parquet::arrow::{PARQUET_FIELD_ID_META_KEY, ParquetRecordBatchStreamBuilder};
+use arrow_array::RecordBatch;
+use futures::{FutureExt, StreamExt, TryStreamExt};
+use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions, RowSelector};
+use parquet::arrow::{PARQUET_FIELD_ID_META_KEY, ParquetRecordBatchStreamBuilder, ProjectionMask};
 
+use super::ordered::{OrderedRecordBatchDrain, task_stream_error};
+use super::reverse::{
+    ChunkCacheLookup, ReversedChunkKey, ReversedGroupBatches, acquire_chunk,
+    reversed_chunk_cache_max_bytes, reversed_chunk_rows, split_selection_by_groups,
+    tail_chunks_of_group_selection,
+};
 use super::{
     ArrowFileReader, ArrowReader, ParquetReadOptions, PromotedPruneSpec, RawPruneSpec,
     add_fallback_field_ids_to_arrow_schema, apply_name_mapping_to_arrow_schema,
@@ -36,6 +43,7 @@ use crate::arrow::int96::coerce_int96_timestamps;
 use crate::arrow::record_batch_transformer::RecordBatchTransformerBuilder;
 use crate::arrow::scan_metrics::{ScanCounters, ScanMetrics, ScanResult};
 use crate::error::Result;
+use crate::expr::BoundPredicate;
 use crate::io::{FileIO, FileMetadata, FileRead};
 use crate::metadata_columns::{RESERVED_FIELD_ID_FILE, is_metadata_field};
 use crate::scan::{ArrowRecordBatchStream, FileScanTask, FileScanTaskStream};
@@ -47,6 +55,7 @@ impl ArrowReader {
     /// Returns a [`ScanResult`] containing the record batch stream and scan metrics.
     pub fn read(self, tasks: FileScanTaskStream) -> Result<ScanResult> {
         let concurrency_limit_data_files = self.concurrency_limit_data_files;
+        let output_order_preserved = self.output_order_preserved;
         let scan_metrics = ScanMetrics::new(
             self.scan_counters
                 .unwrap_or_else(|| Arc::new(ScanCounters::default())),
@@ -65,6 +74,8 @@ impl ArrowReader {
             cache_bypass: self.cache_bypass,
             raw_prune_spec: self.raw_prune_spec,
             promoted_prune: self.promoted_prune,
+            reverse: self.reverse,
+            reversed_chunk_rows: self.reversed_chunk_rows,
         };
 
         // Fast-path for single concurrency to avoid overhead of try_flatten_unordered
@@ -78,6 +89,18 @@ impl ArrowReader {
                     })
                     .try_flatten(),
             )
+        } else if output_order_preserved {
+            Box::pin(OrderedRecordBatchDrain::new(
+                tasks.map(move |task| {
+                    let task_reader = task_reader.clone();
+                    async move {
+                        let task = task.map_err(task_stream_error)?;
+                        task_reader.process(task).await
+                    }
+                    .boxed()
+                }),
+                concurrency_limit_data_files,
+            ))
         } else {
             Box::pin(
                 tasks
@@ -109,6 +132,8 @@ struct FileScanTaskReader {
     cache_bypass: bool,
     raw_prune_spec: Option<RawPruneSpec>,
     promoted_prune: Vec<PromotedPruneSpec>,
+    reverse: bool,
+    reversed_chunk_rows: Option<usize>,
 }
 
 impl FileScanTaskReader {
@@ -231,7 +256,9 @@ impl FileScanTaskReader {
             arrow_metadata
         };
 
-        // Build the stream reader, reusing the already-opened file reader
+        // Build the stream reader, reusing the already-opened file reader.
+        // Reversed chunks reuse the resolved metadata without rereading it.
+        let resolved_metadata_for_chunks = arrow_metadata.clone();
         let mut record_batch_stream_builder =
             ParquetRecordBatchStreamBuilder::new_with_metadata(parquet_file_reader, arrow_metadata);
 
@@ -300,6 +327,7 @@ impl FileScanTaskReader {
                 Some(filter_predicate.clone().and(delete_predicate))
             }
         };
+        let predicate_for_chunks = final_predicate.clone();
 
         // There are three possible sources for potential lists of selected RowGroup indices,
         // and two for `RowSelection`s.
@@ -506,6 +534,55 @@ impl FileScanTaskReader {
             );
         }
 
+        if self.reverse {
+            let ascending: Vec<usize> = selected_row_group_indices.clone().unwrap_or_else(|| {
+                (0..record_batch_stream_builder.metadata().num_row_groups()).collect()
+            });
+            let group_rows: Vec<usize> = ascending
+                .iter()
+                .map(|&index| {
+                    record_batch_stream_builder
+                        .metadata()
+                        .row_group(index)
+                        .num_rows() as usize
+                })
+                .collect();
+            let per_group_selectors = match row_selection.take() {
+                Some(selection) => split_selection_by_groups(selection, &group_rows),
+                None => group_rows
+                    .iter()
+                    .map(|&rows| vec![RowSelector::select(rows)])
+                    .collect(),
+            };
+            let configured_chunk = self.reversed_chunk_rows.unwrap_or_else(reversed_chunk_rows);
+            let (first_chunk, max_chunk) = match configured_chunk {
+                0 => (usize::MAX, usize::MAX),
+                rows => (self.batch_size.unwrap_or(8192).min(rows), rows),
+            };
+            let mut chunk_plan = Vec::new();
+            for (position, &group) in ascending.iter().enumerate().rev() {
+                for (selection, selected_rows) in tail_chunks_of_group_selection(
+                    &per_group_selectors[position],
+                    first_chunk,
+                    max_chunk,
+                ) {
+                    chunk_plan.push((group, selection, selected_rows));
+                }
+            }
+            return Ok(Self::reversed_chunked_stream(
+                Arc::new(task),
+                self.file_io.clone(),
+                parquet_read_options,
+                self.scan_metrics.clone(),
+                resolved_metadata_for_chunks,
+                projection_mask,
+                predicate_for_chunks,
+                self.batch_size,
+                chunk_plan,
+                self.cache_bypass,
+            ));
+        }
+
         if let Some(row_selection) = row_selection {
             record_batch_stream_builder =
                 record_batch_stream_builder.with_row_selection(row_selection);
@@ -530,6 +607,163 @@ impl FileScanTaskReader {
                 });
 
         Ok(Box::pin(record_batch_stream) as ArrowRecordBatchStream)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn reversed_chunked_stream(
+        task: Arc<FileScanTask>,
+        file_io: FileIO,
+        parquet_read_options: ParquetReadOptions,
+        scan_metrics: ScanMetrics,
+        resolved_metadata: ArrowReaderMetadata,
+        projection_mask: ProjectionMask,
+        predicate: Option<BoundPredicate>,
+        batch_size: Option<usize>,
+        chunk_plan: Vec<(usize, Vec<RowSelector>, usize)>,
+        cache_bypass: bool,
+    ) -> ArrowRecordBatchStream {
+        let stream = futures::stream::iter(chunk_plan)
+            .then(move |(group, selectors, _selected_rows)| {
+                let task = task.clone();
+                let file_io = file_io.clone();
+                let scan_metrics = scan_metrics.clone();
+                let resolved_metadata = resolved_metadata.clone();
+                let projection_mask = projection_mask.clone();
+                let predicate = predicate.clone();
+                async move {
+                    let key = (!cache_bypass
+                        && predicate.is_none()
+                        && reversed_chunk_cache_max_bytes() > 0)
+                        .then(|| ReversedChunkKey {
+                            path: task.data_file_path.clone(),
+                            group,
+                            selectors: selectors
+                                .iter()
+                                .map(|selector| (selector.skip, selector.row_count))
+                                .collect(),
+                            batch_size,
+                            field_ids: task.project_field_ids().to_vec(),
+                        });
+                    let leader = if let Some(key) = key {
+                        match acquire_chunk(key).await {
+                            ChunkCacheLookup::Hit(batches) => {
+                                return Box::pin(futures::stream::iter(batches.into_iter().map(Ok)))
+                                    as ArrowRecordBatchStream;
+                            }
+                            ChunkCacheLookup::Leader(leader) => Some(leader),
+                            ChunkCacheLookup::TimedOut => None,
+                        }
+                    } else {
+                        None
+                    };
+
+                    // `leader` is armed before either await below. Dropping
+                    // this future therefore releases its single-flight marker.
+                    let opened = Self::open_reversed_chunk(
+                        task,
+                        file_io,
+                        parquet_read_options,
+                        scan_metrics,
+                        resolved_metadata,
+                        projection_mask,
+                        predicate,
+                        batch_size,
+                        group,
+                        selectors,
+                        cache_bypass,
+                    )
+                    .await;
+                    match opened {
+                        Ok(stream) if leader.is_some() => {
+                            match stream.try_collect::<Vec<RecordBatch>>().await {
+                                Ok(batches) => {
+                                    leader.as_ref().unwrap().publish(batches.clone());
+                                    Box::pin(futures::stream::iter(batches.into_iter().map(Ok)))
+                                        as ArrowRecordBatchStream
+                                }
+                                Err(error) => {
+                                    Box::pin(futures::stream::once(async move { Err(error) }))
+                                        as ArrowRecordBatchStream
+                                }
+                            }
+                        }
+                        Ok(stream) => stream,
+                        Err(error) => Box::pin(futures::stream::once(async move { Err(error) }))
+                            as ArrowRecordBatchStream,
+                    }
+                }
+            })
+            .flatten();
+        Box::pin(stream)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn open_reversed_chunk(
+        task: Arc<FileScanTask>,
+        file_io: FileIO,
+        parquet_read_options: ParquetReadOptions,
+        scan_metrics: ScanMetrics,
+        resolved_metadata: ArrowReaderMetadata,
+        projection_mask: ProjectionMask,
+        predicate: Option<BoundPredicate>,
+        batch_size: Option<usize>,
+        group: usize,
+        selectors: Vec<RowSelector>,
+        cache_bypass: bool,
+    ) -> Result<ArrowRecordBatchStream> {
+        let (reader, _) = ArrowReader::open_parquet_file(
+            &task.data_file_path,
+            &file_io,
+            task.file_size_in_bytes,
+            parquet_read_options,
+            scan_metrics,
+            cache_bypass,
+        )
+        .await?;
+        let mut builder =
+            ParquetRecordBatchStreamBuilder::new_with_metadata(reader, resolved_metadata)
+                .with_projection(projection_mask)
+                .with_row_groups(vec![group])
+                .with_row_selection(selectors.into());
+        if let Some(batch_size) = batch_size {
+            builder = builder.with_batch_size(batch_size);
+        }
+        if let Some(predicate) = predicate.as_ref() {
+            let (field_ids, field_id_map) = ArrowReader::build_field_id_set_and_map(
+                builder.parquet_schema(),
+                builder.schema(),
+                predicate,
+                false,
+            )?;
+            let row_filter = ArrowReader::get_row_filter(
+                predicate,
+                builder.parquet_schema(),
+                &field_ids,
+                &field_id_map,
+            )?;
+            builder = builder.with_row_filter(row_filter);
+        }
+
+        let mut transformer_builder =
+            RecordBatchTransformerBuilder::new(task.schema_ref(), task.project_field_ids());
+        if task.project_field_ids().contains(&RESERVED_FIELD_ID_FILE) {
+            transformer_builder = transformer_builder.with_constant(
+                RESERVED_FIELD_ID_FILE,
+                Datum::string(task.data_file_path.clone()),
+            );
+        }
+        if let (Some(partition_spec), Some(partition_data)) =
+            (task.partition_spec.clone(), task.partition.clone())
+        {
+            transformer_builder =
+                transformer_builder.with_partition(partition_spec, partition_data)?;
+        }
+        let mut transformer = transformer_builder.build();
+        let stream = builder.build()?.map(move |batch| match batch {
+            Ok(batch) => transformer.process_record_batch(batch),
+            Err(error) => Err(error.into()),
+        });
+        Ok(Box::pin(ReversedGroupBatches::new(Box::pin(stream))))
     }
 }
 
@@ -611,21 +845,25 @@ mod tests {
     use std::collections::HashMap;
     use std::fs::File;
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     use arrow_array::cast::AsArray;
-    use arrow_array::{Array, ArrayRef, RecordBatch};
+    use arrow_array::{Array, ArrayRef, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema as ArrowSchema};
-    use futures::TryStreamExt;
+    use futures::{StreamExt, TryStreamExt};
     use parquet::arrow::{ArrowWriter, PARQUET_FIELD_ID_META_KEY};
     use parquet::basic::Compression;
     use parquet::file::properties::WriterProperties;
     use tempfile::TempDir;
 
     use crate::Runtime;
-    use crate::arrow::ArrowReaderBuilder;
+    use crate::arrow::{ArrowReaderBuilder, ScanCounters};
+    use crate::expr::{Bind, Reference};
     use crate::io::FileIO;
-    use crate::scan::{FileScanTask, FileScanTaskStream};
-    use crate::spec::{DataFileFormat, NestedField, PrimitiveType, Schema, SchemaRef, Type};
+    use crate::scan::{FileScanTask, FileScanTaskDeleteFile, FileScanTaskStream};
+    use crate::spec::{
+        DataContentType, DataFileFormat, Datum, NestedField, PrimitiveType, Schema, SchemaRef, Type,
+    };
 
     // INT96 encoding: [nanos_low_u32, nanos_high_u32, julian_day_u32]
     // Julian day 2_440_588 = Unix epoch (1970-01-01)
@@ -721,6 +959,353 @@ mod tests {
         assert_eq!(timestamps(&cold), expected);
         assert_eq!(timestamps(&warm), expected);
         assert_eq!(timestamps(&bypassed), expected);
+    }
+
+    fn write_ordered_fixture(
+        directory: &str,
+        name: &str,
+        timestamps: Vec<Option<i64>>,
+        ids: Vec<i32>,
+    ) -> String {
+        use arrow_array::{Int32Array, Int64Array};
+
+        let arrow_schema = Arc::new(ArrowSchema::new(vec![
+            Field::new("timestamp", DataType::Int64, true).with_metadata(HashMap::from([(
+                PARQUET_FIELD_ID_META_KEY.to_string(),
+                "1".to_string(),
+            )])),
+            Field::new("id", DataType::Int32, false).with_metadata(HashMap::from([(
+                PARQUET_FIELD_ID_META_KEY.to_string(),
+                "2".to_string(),
+            )])),
+        ]));
+        let batch = RecordBatch::try_new(
+            arrow_schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(timestamps)),
+                Arc::new(Int32Array::from(ids)),
+            ],
+        )
+        .unwrap();
+        let path = format!("{directory}/{name}.parquet");
+        let properties = WriterProperties::builder()
+            .set_max_row_group_row_count(Some(4))
+            .set_compression(Compression::SNAPPY)
+            .build();
+        let mut writer =
+            ArrowWriter::try_new(File::create(&path).unwrap(), arrow_schema, Some(properties))
+                .unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        path
+    }
+
+    fn ordered_fixture_schema() -> SchemaRef {
+        Arc::new(
+            Schema::builder()
+                .with_schema_id(1)
+                .with_fields(vec![
+                    NestedField::optional(1, "timestamp", Type::Primitive(PrimitiveType::Long))
+                        .into(),
+                    NestedField::required(2, "id", Type::Primitive(PrimitiveType::Int)).into(),
+                ])
+                .build()
+                .unwrap(),
+        )
+    }
+
+    fn ordered_fixture_task(path: &str, schema: SchemaRef) -> FileScanTask {
+        FileScanTask::builder()
+            .with_file_size_in_bytes(std::fs::metadata(path).unwrap().len())
+            .with_start(0)
+            .with_length(0)
+            .with_data_file_path(path.to_string())
+            .with_data_file_format(DataFileFormat::Parquet)
+            .with_schema(schema)
+            .with_project_field_ids(vec![1, 2])
+            .with_case_sensitive(false)
+            .build()
+    }
+
+    fn ordered_fixture_rows(batches: &[RecordBatch]) -> Vec<(Option<i64>, i32)> {
+        batches
+            .iter()
+            .flat_map(|batch| {
+                let timestamps = batch
+                    .column(0)
+                    .as_primitive::<arrow_array::types::Int64Type>();
+                let ids = batch
+                    .column(1)
+                    .as_primitive::<arrow_array::types::Int32Type>();
+                (0..batch.num_rows())
+                    .map(|index| {
+                        (
+                            (!timestamps.is_null(index)).then(|| timestamps.value(index)),
+                            ids.value(index),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    async fn read_ordered_fixture(
+        paths: &[String],
+        reverse: bool,
+        cache_bypass: bool,
+    ) -> (Vec<RecordBatch>, Arc<ScanCounters>) {
+        let schema = ordered_fixture_schema();
+        let counters = Arc::new(ScanCounters::default());
+        let tasks = paths
+            .iter()
+            .map(|path| Ok(ordered_fixture_task(path, schema.clone())))
+            .collect::<Vec<_>>();
+        let mut builder = ArrowReaderBuilder::new(FileIO::new_with_fs(), Runtime::current())
+            .with_data_file_concurrency_limit(4)
+            .with_output_order_preserved(true)
+            .with_batch_size(2)
+            .with_reversed_chunk_rows(4)
+            .with_scan_counters(Some(counters.clone()))
+            .with_cache_bypass(cache_bypass);
+        if reverse {
+            builder = builder.with_reverse(true);
+        }
+        let batches = builder
+            .build()
+            .read(Box::pin(futures::stream::iter(tasks)))
+            .unwrap()
+            .stream()
+            .try_collect()
+            .await
+            .unwrap();
+        (batches, counters)
+    }
+
+    #[tokio::test]
+    async fn ordered_concurrent_tasks_drain_in_task_order() {
+        let directory = TempDir::new().unwrap();
+        let directory = directory.path().to_str().unwrap();
+        let first = write_ordered_fixture(
+            directory,
+            "first",
+            (0..40).map(Some).collect(),
+            (0..40).collect(),
+        );
+        let second = write_ordered_fixture(
+            directory,
+            "second",
+            (40..44).map(Some).collect(),
+            (40..44).collect(),
+        );
+        let (batches, _) = read_ordered_fixture(&[first, second], false, false).await;
+        let ids: Vec<i32> = ordered_fixture_rows(&batches)
+            .into_iter()
+            .map(|(_, id)| id)
+            .collect();
+        assert_eq!(ids, (0..44).collect::<Vec<_>>());
+    }
+
+    #[tokio::test]
+    async fn reverse_chunks_match_materialized_reference_cold_warm_and_bypassed() {
+        let directory = TempDir::new().unwrap();
+        let path = write_ordered_fixture(
+            directory.path().to_str().unwrap(),
+            "ties-and-nulls",
+            vec![
+                None,
+                Some(1),
+                Some(2),
+                Some(2),
+                Some(3),
+                Some(4),
+                Some(4),
+                Some(5),
+                Some(6),
+            ],
+            (0..9).collect(),
+        );
+        let expected = vec![
+            (Some(6), 8),
+            (Some(5), 7),
+            (Some(4), 6),
+            (Some(4), 5),
+            (Some(3), 4),
+            (Some(2), 3),
+            (Some(2), 2),
+            (Some(1), 1),
+            (None, 0),
+        ];
+
+        let (cold, _) = read_ordered_fixture(std::slice::from_ref(&path), true, false).await;
+        let (warm, _) = read_ordered_fixture(std::slice::from_ref(&path), true, false).await;
+        let (bypassed, _) = read_ordered_fixture(std::slice::from_ref(&path), true, true).await;
+        assert_eq!(ordered_fixture_rows(&cold), expected);
+        assert_eq!(ordered_fixture_rows(&warm), expected);
+        assert_eq!(ordered_fixture_rows(&bypassed), expected);
+    }
+
+    #[tokio::test]
+    async fn reverse_chunks_compose_with_sparse_row_selection() {
+        let directory = TempDir::new().unwrap();
+        let path = write_ordered_fixture(
+            directory.path().to_str().unwrap(),
+            "selected",
+            (0..10).map(Some).collect(),
+            (0..10).collect(),
+        );
+        let schema = ordered_fixture_schema();
+        let predicate = Reference::new("id")
+            .is_in([Datum::int(1), Datum::int(3), Datum::int(8)])
+            .bind(schema.clone(), true)
+            .unwrap();
+        let task = FileScanTask::builder()
+            .with_predicate(Some(predicate))
+            .with_file_size_in_bytes(std::fs::metadata(&path).unwrap().len())
+            .with_start(0)
+            .with_length(0)
+            .with_data_file_path(path)
+            .with_data_file_format(DataFileFormat::Parquet)
+            .with_schema(schema)
+            .with_project_field_ids(vec![1, 2])
+            .with_case_sensitive(false)
+            .build();
+        let batches = ArrowReaderBuilder::new(FileIO::new_with_fs(), Runtime::current())
+            .with_reverse(true)
+            .with_row_selection_enabled(true)
+            .with_batch_size(2)
+            .with_reversed_chunk_rows(4)
+            .build()
+            .read(Box::pin(futures::stream::iter([Ok(task)])))
+            .unwrap()
+            .stream()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(
+            ordered_fixture_rows(&batches),
+            vec![(Some(8), 8), (Some(3), 3), (Some(1), 1)]
+        );
+    }
+
+    #[tokio::test]
+    async fn reverse_chunks_compose_with_positional_deletes() {
+        use arrow_array::Int64Array;
+
+        let directory = TempDir::new().unwrap();
+        let directory = directory.path().to_str().unwrap();
+        let path = write_ordered_fixture(
+            directory,
+            "deleted",
+            (0..10).map(Some).collect(),
+            (0..10).collect(),
+        );
+        let delete_path = format!("{directory}/positions.parquet");
+        let delete_schema = Arc::new(ArrowSchema::new(vec![
+            Field::new("file_path", DataType::Utf8, false),
+            Field::new("pos", DataType::Int64, false),
+        ]));
+        let delete_batch = RecordBatch::try_new(
+            delete_schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec![path.as_str(), path.as_str()])),
+                Arc::new(Int64Array::from(vec![2, 8])),
+            ],
+        )
+        .unwrap();
+        let mut delete_writer =
+            ArrowWriter::try_new(File::create(&delete_path).unwrap(), delete_schema, None).unwrap();
+        delete_writer.write(&delete_batch).unwrap();
+        delete_writer.close().unwrap();
+
+        let task = FileScanTask {
+            file_size_in_bytes: std::fs::metadata(&path).unwrap().len(),
+            start: 0,
+            length: 0,
+            record_count: None,
+            data_file_path: path,
+            data_file_format: DataFileFormat::Parquet,
+            schema: ordered_fixture_schema(),
+            project_field_ids: vec![1, 2],
+            predicate: None,
+            deletes: vec![FileScanTaskDeleteFile {
+                file_path: delete_path.clone(),
+                file_type: DataContentType::PositionDeletes,
+                partition_spec_id: 0,
+                equality_ids: None,
+                file_size_in_bytes: std::fs::metadata(delete_path).unwrap().len(),
+            }],
+            partition: None,
+            partition_spec: None,
+            name_mapping: None,
+            case_sensitive: false,
+            statistics_blobs: vec![],
+        };
+        let batches = ArrowReaderBuilder::new(FileIO::new_with_fs(), Runtime::current())
+            .with_reverse(true)
+            .with_batch_size(2)
+            .with_reversed_chunk_rows(4)
+            .build()
+            .read(Box::pin(futures::stream::iter([Ok(task)])))
+            .unwrap()
+            .stream()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let ids: Vec<i32> = ordered_fixture_rows(&batches)
+            .into_iter()
+            .map(|(_, id)| id)
+            .collect();
+        assert_eq!(ids, vec![9, 7, 6, 5, 4, 3, 1, 0]);
+    }
+
+    #[tokio::test]
+    async fn dropping_reverse_limit_stream_stops_before_full_decode() {
+        let directory = TempDir::new().unwrap();
+        let path = write_ordered_fixture(
+            directory.path().to_str().unwrap(),
+            "early-stop",
+            (0..64).map(Some).collect(),
+            (0..64).collect(),
+        );
+        let schema = ordered_fixture_schema();
+        let make_task = || ordered_fixture_task(&path, schema.clone());
+
+        let early_counters = Arc::new(ScanCounters::default());
+        let mut early = ArrowReaderBuilder::new(FileIO::new_with_fs(), Runtime::current())
+            .with_reverse(true)
+            .with_batch_size(2)
+            .with_reversed_chunk_rows(8)
+            .with_cache_bypass(true)
+            .with_scan_counters(Some(early_counters.clone()))
+            .build()
+            .read(Box::pin(futures::stream::iter([Ok(make_task())])))
+            .unwrap()
+            .stream();
+        assert_eq!(early.next().await.unwrap().unwrap().num_rows(), 2);
+        drop(early);
+
+        let full_counters = Arc::new(ScanCounters::default());
+        let full = ArrowReaderBuilder::new(FileIO::new_with_fs(), Runtime::current())
+            .with_reverse(true)
+            .with_batch_size(2)
+            .with_reversed_chunk_rows(8)
+            .with_cache_bypass(true)
+            .with_scan_counters(Some(full_counters.clone()))
+            .build()
+            .read(Box::pin(futures::stream::iter([Ok(make_task())])))
+            .unwrap()
+            .stream()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(full.iter().map(RecordBatch::num_rows).sum::<usize>(), 64);
+        assert!(
+            early_counters.bytes_data.load(Ordering::Relaxed)
+                < full_counters.bytes_data.load(Ordering::Relaxed),
+            "early stop must fetch fewer data bytes: early={}, full={}",
+            early_counters.bytes_data.load(Ordering::Relaxed),
+            full_counters.bytes_data.load(Ordering::Relaxed),
+        );
     }
 
     // ArrowWriter cannot write INT96, so we use SerializedFileWriter directly.

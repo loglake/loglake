@@ -17,6 +17,25 @@ use iceberg::{
 };
 use iceberg_storage_opendal::{CustomAwsCredentialLoader, OpenDalStorageFactory};
 
+/// Apply the ordered-scan fields that LogLake's storage provider carries into
+/// one candidate Iceberg reader. Keeping this mapping in the candidate adapter
+/// makes slice 7's dependency adoption mechanical.
+pub fn configure_ordered_reader(
+    mut reader: iceberg::arrow::ArrowReaderBuilder,
+    preserve_task_order: bool,
+    reverse_scan: bool,
+    reversed_chunk_rows: Option<usize>,
+) -> iceberg::arrow::ArrowReaderBuilder {
+    reader = reader.with_output_order_preserved(preserve_task_order);
+    if reverse_scan {
+        reader = reader.with_reverse(true);
+    }
+    if let Some(rows) = reversed_chunk_rows {
+        reader = reader.with_reversed_chunk_rows(rows);
+    }
+    reader
+}
+
 /// Build the candidate storage factory without changing production selection.
 pub fn storage_factory_for(
     warehouse_url: &str,
