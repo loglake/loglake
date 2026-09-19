@@ -2943,6 +2943,8 @@ dependencies = [
  "fnv",
  "futures",
  "itertools 0.13.0",
+ "loglake-bloom",
+ "metrics",
  "minijinja",
  "mockall",
  "moka",
@@ -2979,8 +2981,10 @@ name = "iceberg-catalog-sql"
 version = "0.10.1"
 dependencies = [
  "async-trait",
+ "futures",
  "iceberg 0.10.1",
  "itertools 0.13.0",
+ "metrics",
  "regex",
  "sqlx",
  "strum",

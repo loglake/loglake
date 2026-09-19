@@ -44,6 +44,9 @@ version = "0.1.89"
 [dependencies.iceberg]
 version = "0.10.0"
 
+[dependencies.metrics]
+version = "0.24"
+
 [dependencies.sqlx]
 version = "0.8.1"
 features = ["any"]
@@ -54,6 +57,9 @@ version = "0.27.2"
 
 [dev-dependencies.itertools]
 version = "0.13"
+
+[dev-dependencies.futures]
+version = "0.3"
 
 [dev-dependencies.regex]
 version = "1.11.3"

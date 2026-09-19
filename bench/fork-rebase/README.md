@@ -33,19 +33,44 @@ Recorded 2026-09-19:
 - Separate 0.9 and 0.10 processes read the same Iceberg JSON fixtures and
   compare normalized JSON. They exchange no Arrow or Iceberg Rust types.
 
+## Slice 2 ledger — commit and writer equivalence
+
+Recorded 2026-09-19:
+
+- Transactions pass their refreshed base to an opting-in catalog, refuse a
+  recreated table UUID, retain retryable CAS conflicts, and avoid metadata
+  commits when a replayed action becomes empty. A mock-catalog fixture proves
+  the supplied-base path does one load.
+- Atomic rewrites conserve the current live-file set for add-only, delete-only
+  and replacement commits, reapply against a stale base, retain caller summary
+  properties, and reject partial removals. Reserved snapshot IDs remain
+  available for a same-transaction statistics registration.
+- The SQL catalog applies a commit to the supplied base and conditions its
+  pointer update on that base's metadata location. SQLite uniqueness failures
+  retain distinct table and namespace creation-race kinds.
+- Candidate Parquet output now carries row-group trigram blooms, compact typed
+  group counts, time buckets for every timestamp unit, and the manifest sort
+  order ID. The fixture compares decoded rows and footer payloads between the
+  append and rewrite writer shapes, including null and capped dimensions.
+- Snapshot summary parsing stays on upstream 0.10.1; only the underflow defense
+  for an invalid rewrite is retained. Manifest validation still rejects that
+  rewrite before persistence.
+- Reader behavior and OpenDAL remain outside this slice. The root workspace's
+  production dependency selection is unchanged.
+
 ## Refreshed divergence inventory
 
-The candidate core carries no LogLake source behavior yet. Its only packaging
-change gates the four `iceberg-storage-opendal` external-service tests described
-above; rustfmt normalization is mechanical. The schema and expiry differences
-are confined to `adapter/src/lib.rs` and its fixture runners.
+The candidate core now carries the slice-2 catalog, transaction and writer
+behavior. Its packaging changes also gate the four
+`iceberg-storage-opendal` external-service tests described above. The schema
+and expiry caller differences remain in `adapter/src/lib.rs` and its fixture
+runners.
 
 Upstream 0.10.1 now supplies schema evolution and snapshot expiry, so those two
 local actions do not move forward. The remaining production divergences still
-need later slices: reader pruning/caches/order/counters, writer footers and
-manifest stamping, atomic rewrite, catalog base threading/metrics, and OpenDAL
-upload controls/permits. Refresh the file inventory against the package sources
-with:
+need later slices: reader pruning/caches/order/counters, segmented-index
+publication, and OpenDAL upload controls/permits. Refresh the file inventory
+against the package sources with:
 
 ```sh
 diff -rq --exclude=.cargo-ok --exclude=.cargo_vcs_info.json \

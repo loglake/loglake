@@ -119,6 +119,16 @@ pub trait Catalog: Debug + Sync + Send {
 
     /// Update a table to the catalog.
     async fn update_table(&self, commit: TableCommit) -> Result<Table>;
+
+    /// Update a table using the exact base the commit was computed against.
+    ///
+    /// Catalogs that would otherwise reload table metadata can override this
+    /// method to avoid that redundant read. The default preserves the existing
+    /// catalog contract.
+    async fn update_table_with_base(&self, commit: TableCommit, base: Table) -> Result<Table> {
+        let _ = base;
+        self.update_table(commit).await
+    }
 }
 
 /// Common interface for all catalog builders.

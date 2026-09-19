@@ -36,6 +36,11 @@ use crate::{Error, ErrorKind, TableRequirement, TableUpdate};
 
 const META_ROOT_PATH: &str = "metadata";
 
+/// Reserve a snapshot id before constructing a rewrite sidecar.
+pub fn reserve_snapshot_id(table: &Table) -> i64 {
+    SnapshotProducer::generate_unique_snapshot_id(table)
+}
+
 /// A trait that defines how different table operations produce new snapshots.
 ///
 /// `SnapshotProduceOperation` is used by [`SnapshotProducer`] to customize snapshot creation
@@ -115,6 +120,7 @@ pub(crate) struct SnapshotProducer<'a> {
     commit_uuid: Uuid,
     snapshot_properties: HashMap<String, String>,
     added_data_files: Vec<DataFile>,
+    removed_data_files: Vec<DataFile>,
     // A counter used to generate unique manifest file names.
     // It starts from 0 and increments for each new manifest file.
     // Note: This counter is limited to the range of (0..u64::MAX).
@@ -134,8 +140,43 @@ impl<'a> SnapshotProducer<'a> {
             commit_uuid,
             snapshot_properties,
             added_data_files,
+            removed_data_files: Vec::new(),
             manifest_counter: (0..),
         }
+    }
+
+    pub(crate) fn new_with_snapshot_id(
+        table: &'a Table,
+        snapshot_id: i64,
+        commit_uuid: Uuid,
+        snapshot_properties: HashMap<String, String>,
+        added_data_files: Vec<DataFile>,
+    ) -> Result<Self> {
+        if table
+            .metadata()
+            .snapshots()
+            .any(|snapshot| snapshot.snapshot_id() == snapshot_id)
+        {
+            return Err(Error::new(
+                ErrorKind::DataInvalid,
+                format!("reserved snapshot id {snapshot_id} is already present on the table"),
+            )
+            .with_retryable(false));
+        }
+
+        Ok(Self {
+            table,
+            snapshot_id,
+            commit_uuid,
+            snapshot_properties,
+            added_data_files,
+            removed_data_files: Vec::new(),
+            manifest_counter: (0..),
+        })
+    }
+
+    pub(crate) fn set_removed_data_files(&mut self, removed_data_files: Vec<DataFile>) {
+        self.removed_data_files = removed_data_files;
     }
 
     pub(crate) fn validate_added_data_files(&self) -> Result<()> {
@@ -334,6 +375,90 @@ impl<'a> SnapshotProducer<'a> {
         writer.write_manifest_file().await
     }
 
+    /// Rewrite current data manifests while removing the requested live files.
+    async fn rewrite_existing_manifests_for_removal(&mut self) -> Result<Vec<ManifestFile>> {
+        let Some(snapshot) = self.table.metadata().current_snapshot() else {
+            return Err(Error::new(
+                ErrorKind::DataInvalid,
+                "Cannot remove data files: table has no current snapshot",
+            ));
+        };
+        let manifest_list = self.table.manifest_list_reader(snapshot).load().await?;
+        let removed_paths: HashSet<String> = self
+            .removed_data_files
+            .iter()
+            .map(|file| file.file_path.clone())
+            .collect();
+
+        let mut result = Vec::with_capacity(manifest_list.entries().len());
+        let mut matched = 0usize;
+
+        for manifest_file in manifest_list.entries() {
+            let manifest = manifest_file.load_manifest(self.table.file_io()).await?;
+            let touches_removed = manifest
+                .entries()
+                .iter()
+                .any(|entry| entry.is_alive() && removed_paths.contains(entry.file_path()));
+
+            if !touches_removed {
+                if manifest_file.has_added_files() || manifest_file.has_existing_files() {
+                    result.push(manifest_file.clone());
+                }
+                continue;
+            }
+
+            let mut writer = self.new_manifest_writer(ManifestContentType::Data)?;
+            let mut wrote_entry = false;
+            for entry in manifest.entries() {
+                if !entry.is_alive() {
+                    continue;
+                }
+                let data_file = entry.data_file().clone();
+                let sequence_number = entry.sequence_number().ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::DataInvalid,
+                        "Live manifest entry is missing a data sequence number during rewrite",
+                    )
+                })?;
+                let file_sequence_number = entry.file_sequence_number;
+                if removed_paths.contains(entry.file_path()) {
+                    writer.add_delete_file(data_file, sequence_number, file_sequence_number)?;
+                    matched += 1;
+                } else {
+                    let snapshot_id = entry.snapshot_id().ok_or_else(|| {
+                        Error::new(
+                            ErrorKind::DataInvalid,
+                            "Live manifest entry is missing a snapshot id during rewrite",
+                        )
+                    })?;
+                    writer.add_existing_file(
+                        data_file,
+                        snapshot_id,
+                        sequence_number,
+                        file_sequence_number,
+                    )?;
+                }
+                wrote_entry = true;
+            }
+            if wrote_entry {
+                result.push(writer.write_manifest_file().await?);
+            }
+        }
+
+        if matched != self.removed_data_files.len() {
+            return Err(Error::new(
+                ErrorKind::DataInvalid,
+                format!(
+                    "Rewrite expected to remove {} files but matched {} live manifest entries; refusing to commit a partial rewrite",
+                    self.removed_data_files.len(),
+                    matched
+                ),
+            ));
+        }
+
+        Ok(result)
+    }
+
     async fn manifest_file<OP: SnapshotProduceOperation, MP: ManifestProcess>(
         &mut self,
         snapshot_produce_operation: &OP,
@@ -344,24 +469,27 @@ impl<'a> SnapshotProducer<'a> {
         // TODO: Allowing snapshot property setup with no added data files is a workaround.
         // We should clean it up after all necessary actions are supported.
         // For details, please refer to https://github.com/apache/iceberg-rust/issues/1548
-        if self.added_data_files.is_empty() && self.snapshot_properties.is_empty() {
+        if self.added_data_files.is_empty()
+            && self.removed_data_files.is_empty()
+            && self.snapshot_properties.is_empty()
+        {
             return Err(Error::new(
                 ErrorKind::PreconditionFailed,
-                "No added data files or added snapshot properties found when write a manifest file",
+                "No added data files, removed data files or snapshot properties found when write a manifest file",
             ));
         }
 
-        let existing_manifests = snapshot_produce_operation.existing_manifest(self).await?;
-        let mut manifest_files = existing_manifests;
+        let mut manifest_files = if self.removed_data_files.is_empty() {
+            snapshot_produce_operation.existing_manifest(self).await?
+        } else {
+            self.rewrite_existing_manifests_for_removal().await?
+        };
 
         // Process added entries.
         if !self.added_data_files.is_empty() {
             let added_manifest = self.write_added_manifest().await?;
             manifest_files.push(added_manifest);
         }
-
-        // # TODO
-        // Support process delete entries.
 
         let manifest_files = manifest_process.process_manifests(self, manifest_files);
         Ok(manifest_files)
@@ -398,6 +526,14 @@ impl<'a> SnapshotProducer<'a> {
             );
         }
 
+        for data_file in &self.removed_data_files {
+            summary_collector.remove_file(
+                data_file,
+                table_metadata.current_schema().clone(),
+                table_metadata.default_partition_spec().clone(),
+            );
+        }
+
         let previous_snapshot = table_metadata.current_snapshot();
 
         // User-supplied snapshot properties are applied first, then the computed
@@ -413,11 +549,7 @@ impl<'a> SnapshotProducer<'a> {
             additional_properties,
         };
 
-        update_snapshot_summaries(
-            summary,
-            previous_snapshot.map(|s| s.summary()),
-            snapshot_produce_operation.operation() == Operation::Overwrite,
-        )
+        update_snapshot_summaries(summary, previous_snapshot.map(|s| s.summary()), false)
     }
 
     fn generate_manifest_list_file_path(&self, attempt: i64) -> String {

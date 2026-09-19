@@ -534,7 +534,10 @@ fn update_totals(
         return;
     };
 
-    let new_total = previous_total + added - removed;
+    // An invalid overwrite may try to remove a file that is no longer live.
+    // Manifest validation rejects that commit, but summary construction runs
+    // first and must not panic on the transient underflow.
+    let new_total = (previous_total + added).saturating_sub(removed);
     summary
         .additional_properties
         .insert(total_property.to_string(), new_total.to_string());
@@ -1275,5 +1278,26 @@ mod tests {
         assert_eq!(props.get(TOTAL_FILE_SIZE).unwrap(), "800");
         assert_eq!(props.get(TOTAL_POSITION_DELETES).unwrap(), "2");
         assert_eq!(props.get(TOTAL_EQUALITY_DELETES).unwrap(), "1");
+    }
+
+    #[test]
+    fn invalid_rewrite_summary_underflow_saturates_before_manifest_rejection() {
+        let previous = Summary {
+            operation: Operation::Append,
+            additional_properties: HashMap::from([(TOTAL_RECORDS.to_string(), "1".to_string())]),
+        };
+        let current = Summary {
+            operation: Operation::Overwrite,
+            additional_properties: HashMap::from([(DELETED_RECORDS.to_string(), "2".to_string())]),
+        };
+
+        let updated = update_snapshot_summaries(current, Some(&previous), false).unwrap();
+        assert_eq!(
+            updated
+                .additional_properties
+                .get(TOTAL_RECORDS)
+                .map(String::as_str),
+            Some("0")
+        );
     }
 }

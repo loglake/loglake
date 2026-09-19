@@ -55,11 +55,16 @@ mod action;
 pub use action::*;
 mod append;
 mod expire_snapshots;
+pub use expire_snapshots::ExpireSnapshotsAction;
+mod rewrite;
+pub use rewrite::RewriteFilesAction;
 mod snapshot;
+pub use snapshot::reserve_snapshot_id;
 mod sort_order;
 mod update_location;
 mod update_properties;
 mod update_schema;
+pub use update_schema::{AddColumn, UpdateSchemaAction};
 mod update_statistics;
 mod upgrade_format_version;
 
@@ -67,18 +72,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use backon::{BackoffBuilder, ExponentialBackoff, ExponentialBuilder, RetryableWithContext};
-pub use update_schema::AddColumn;
+use uuid::Uuid;
 
 use crate::error::Result;
 use crate::spec::TableProperties;
 use crate::table::Table;
 use crate::transaction::action::BoxedTransactionAction;
 use crate::transaction::append::FastAppendAction;
-use crate::transaction::expire_snapshots::ExpireSnapshotsAction;
 use crate::transaction::sort_order::ReplaceSortOrderAction;
 use crate::transaction::update_location::UpdateLocationAction;
 use crate::transaction::update_properties::UpdatePropertiesAction;
-use crate::transaction::update_schema::UpdateSchemaAction;
 use crate::transaction::update_statistics::UpdateStatisticsAction;
 use crate::transaction::upgrade_format_version::UpgradeFormatVersionAction;
 use crate::{Catalog, Error, ErrorKind, TableCommit, TableRequirement, TableUpdate};
@@ -87,6 +90,7 @@ use crate::{Catalog, Error, ErrorKind, TableCommit, TableRequirement, TableUpdat
 #[derive(Clone)]
 pub struct Transaction {
     table: Table,
+    table_uuid: Uuid,
     actions: Vec<BoxedTransactionAction>,
 }
 
@@ -95,6 +99,7 @@ impl Transaction {
     pub fn new(table: &Table) -> Self {
         Self {
             table: table.clone(),
+            table_uuid: table.metadata().uuid(),
             actions: vec![],
         }
     }
@@ -149,6 +154,11 @@ impl Transaction {
     /// Creates a fast append action.
     pub fn fast_append(&self) -> FastAppendAction {
         FastAppendAction::new()
+    }
+
+    /// Creates an atomic rewrite action.
+    pub fn rewrite_files(&self) -> RewriteFilesAction {
+        RewriteFilesAction::new()
     }
 
     /// Creates replace sort order action.
@@ -216,12 +226,26 @@ impl Transaction {
     }
 
     async fn do_commit(&mut self, catalog: &dyn Catalog) -> Result<Table> {
+        metrics::counter!("loglake_iceberg_commit_attempts_total").increment(1);
         let refreshed = catalog.load_table(self.table.identifier()).await?;
+        let refreshed_uuid = refreshed.metadata().uuid();
+
+        if refreshed_uuid != self.table_uuid {
+            return Err(Error::new(
+                ErrorKind::CatalogCommitConflicts,
+                "Cannot commit transaction: table UUID changed",
+            )
+            .with_context("identifier", self.table.identifier().to_string())
+            .with_context("expected", self.table_uuid)
+            .with_context("found", refreshed_uuid)
+            .with_retryable(false));
+        }
 
         if self.table.metadata() != refreshed.metadata()
             || self.table.metadata_location() != refreshed.metadata_location()
         {
             // current base is stale, use refreshed as base and re-apply transaction actions
+            metrics::counter!("loglake_iceberg_commit_stale_base_total").increment(1);
             self.table = refreshed.clone();
         }
 
@@ -240,13 +264,19 @@ impl Transaction {
             )?;
         }
 
+        if existing_updates.is_empty() && existing_requirements.is_empty() {
+            return Ok(current_table);
+        }
+
         let table_commit = TableCommit::builder()
             .ident(self.table.identifier().to_owned())
             .updates(existing_updates)
             .requirements(existing_requirements)
             .build();
 
-        catalog.update_table(table_commit).await
+        catalog
+            .update_table_with_base(table_commit, self.table.clone())
+            .await
     }
 }
 
@@ -404,6 +434,34 @@ mod tests {
             .unwrap()
     }
 
+    #[tokio::test]
+    async fn test_commit_supplies_the_loaded_base_without_a_second_catalog_load() {
+        let table = make_v2_table();
+        let expected_location = table.metadata_location().unwrap().to_string();
+        let committed_location = expected_location.clone();
+        let loaded = table.clone();
+        let mut catalog = MockCatalog::new();
+        catalog.expect_load_table().times(1).returning_st(move |_| {
+            let loaded = loaded.clone();
+            Box::pin(async move { Ok(loaded) })
+        });
+        catalog.expect_update_table().times(0);
+        catalog
+            .expect_update_table_with_base()
+            .times(1)
+            .withf(move |_, base| base.metadata_location() == Some(expected_location.as_str()))
+            .returning_st(|_, base| Box::pin(async move { Ok(base) }));
+
+        let committed = create_test_transaction(&table)
+            .commit(&catalog)
+            .await
+            .unwrap();
+        assert_eq!(
+            committed.metadata_location(),
+            Some(committed_location.as_str())
+        );
+    }
+
     /// Helper function to set up a mock catalog with retryable errors
     fn setup_mock_catalog_with_retryable_errors(
         success_after_attempts: Option<u32>,
@@ -417,9 +475,9 @@ mod tests {
 
         let attempts = AtomicU32::new(0);
         mock_catalog
-            .expect_update_table()
+            .expect_update_table_with_base()
             .times(expected_calls)
-            .returning_st(move |_| {
+            .returning_st(move |_, _| {
                 if let Some(success_after_attempts) = success_after_attempts {
                     attempts.fetch_add(1, Ordering::SeqCst);
                     if attempts.load(Ordering::SeqCst) <= success_after_attempts {
@@ -455,9 +513,9 @@ mod tests {
             .returning_st(|_| Box::pin(async move { Ok(make_v2_table()) }));
 
         mock_catalog
-            .expect_update_table()
+            .expect_update_table_with_base()
             .times(1) // Should only be called once since error is not retryable
-            .returning_st(move |_| {
+            .returning_st(move |_, _| {
                 Box::pin(async move {
                     Err(Error::new(ErrorKind::Unexpected, "Non-retryable error")
                         .with_retryable(false))
