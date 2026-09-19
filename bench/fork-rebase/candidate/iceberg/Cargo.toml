@@ -127,6 +127,12 @@ version = "0.3"
 [dependencies.itertools]
 version = "0.13"
 
+[dependencies.loglake-bloom]
+path = "../../../../crates/loglake-bloom"
+
+[dependencies.metrics]
+version = "0.24"
+
 [dependencies.moka]
 version = "0.12.10"
 features = ["future"]

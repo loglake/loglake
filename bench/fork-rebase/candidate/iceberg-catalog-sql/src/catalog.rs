@@ -32,7 +32,8 @@ use sqlx::any::{AnyPoolOptions, AnyQueryResult, AnyRow, install_default_drivers}
 use sqlx::{Any, AnyPool, Row, Transaction};
 
 use crate::error::{
-    from_sqlx_error, no_such_namespace_err, no_such_table_err, table_already_exists_err,
+    from_sqlx_error, namespace_already_exists_err, namespace_insert_error, no_such_namespace_err,
+    no_such_table_err, table_already_exists_err,
 };
 
 /// catalog URI
@@ -385,6 +386,62 @@ impl SqlCatalog {
             }
         }
     }
+
+    async fn commit_onto_base(&self, commit: TableCommit, base: Table) -> Result<Table> {
+        let table_ident = commit.identifier().clone();
+        let current_metadata_location = base.metadata_location_result()?.to_string();
+        let staged_table = commit.apply(base)?;
+        let staged_metadata_location =
+            MetadataLocation::from_str(staged_table.metadata_location_result()?)?;
+
+        staged_table
+            .metadata()
+            .write_to(staged_table.file_io(), &staged_metadata_location)
+            .await?;
+
+        let staged_metadata_location = staged_metadata_location.to_string();
+        let update_result = self
+            .execute(
+                &format!(
+                    "UPDATE {CATALOG_TABLE_NAME}
+                     SET {CATALOG_FIELD_METADATA_LOCATION_PROP} = ?, {CATALOG_FIELD_PREVIOUS_METADATA_LOCATION_PROP} = ?
+                     WHERE {CATALOG_FIELD_CATALOG_NAME} = ?
+                      AND {CATALOG_FIELD_TABLE_NAME} = ?
+                      AND {CATALOG_FIELD_TABLE_NAMESPACE} = ?
+                      AND (
+                        {CATALOG_FIELD_RECORD_TYPE} = '{CATALOG_FIELD_TABLE_RECORD_TYPE}'
+                        OR {CATALOG_FIELD_RECORD_TYPE} IS NULL
+                      )
+                      AND {CATALOG_FIELD_METADATA_LOCATION_PROP} = ?"
+                ),
+                vec![
+                    Some(&staged_metadata_location),
+                    Some(current_metadata_location.as_str()),
+                    Some(&self.name),
+                    Some(table_ident.name()),
+                    Some(&table_ident.namespace().join(".")),
+                    Some(current_metadata_location.as_str()),
+                ],
+                None,
+            )
+            .await?;
+
+        metrics::counter!(
+            "loglake_catalog_cas_total",
+            "outcome" => if update_result.rows_affected() == 0 { "conflict" } else { "won" }
+        )
+        .increment(1);
+
+        if update_result.rows_affected() == 0 {
+            return Err(Error::new(
+                ErrorKind::CatalogCommitConflicts,
+                format!("Commit conflicted for table: {table_ident}"),
+            )
+            .with_retryable(true));
+        }
+
+        Ok(staged_table)
+    }
 }
 
 #[async_trait]
@@ -451,10 +508,7 @@ impl Catalog for SqlCatalog {
         let exists = self.namespace_exists(namespace).await?;
 
         if exists {
-            return Err(Error::new(
-                iceberg::ErrorKind::NamespaceAlreadyExists,
-                format!("Namespace {namespace:?} already exists"),
-            ));
+            return namespace_already_exists_err(namespace);
         }
 
         let namespace_str = namespace.join(".");
@@ -479,7 +533,9 @@ impl Catalog for SqlCatalog {
                 }
             }
 
-            self.execute(&insert_stmt, query_args, None).await?;
+            self.execute(&insert_stmt, query_args, None)
+                .await
+                .map_err(|error| namespace_insert_error(namespace, error))?;
 
             Ok(Namespace::with_properties(
                 namespace.clone(),
@@ -497,7 +553,8 @@ impl Catalog for SqlCatalog {
                 ],
                 None,
             )
-            .await?;
+            .await
+            .map_err(|error| namespace_insert_error(namespace, error))?;
             Ok(Namespace::with_properties(namespace.clone(), properties))
         }
     }
@@ -974,53 +1031,11 @@ impl Catalog for SqlCatalog {
     async fn update_table(&self, commit: TableCommit) -> Result<Table> {
         let table_ident = commit.identifier().clone();
         let current_table = self.load_table(&table_ident).await?;
-        let current_metadata_location = current_table.metadata_location_result()?.to_string();
+        self.commit_onto_base(commit, current_table).await
+    }
 
-        let staged_table = commit.apply(current_table)?;
-        let staged_metadata_location_str = staged_table.metadata_location_result()?;
-        let staged_metadata_location = MetadataLocation::from_str(staged_metadata_location_str)?;
-
-        staged_table
-            .metadata()
-            .write_to(staged_table.file_io(), &staged_metadata_location)
-            .await?;
-
-        let staged_metadata_location_str = staged_metadata_location.to_string();
-        let update_result = self
-            .execute(
-                &format!(
-                    "UPDATE {CATALOG_TABLE_NAME}
-                     SET {CATALOG_FIELD_METADATA_LOCATION_PROP} = ?, {CATALOG_FIELD_PREVIOUS_METADATA_LOCATION_PROP} = ?
-                     WHERE {CATALOG_FIELD_CATALOG_NAME} = ?
-                      AND {CATALOG_FIELD_TABLE_NAME} = ?
-                      AND {CATALOG_FIELD_TABLE_NAMESPACE} = ?
-                      AND (
-                        {CATALOG_FIELD_RECORD_TYPE} = '{CATALOG_FIELD_TABLE_RECORD_TYPE}'
-                        OR {CATALOG_FIELD_RECORD_TYPE} IS NULL
-                      )
-                      AND {CATALOG_FIELD_METADATA_LOCATION_PROP} = ?"
-                ),
-                vec![
-                    Some(&staged_metadata_location_str),
-                    Some(current_metadata_location.as_str()),
-                    Some(&self.name),
-                    Some(table_ident.name()),
-                    Some(&table_ident.namespace().join(".")),
-                    Some(current_metadata_location.as_str()),
-                ],
-                None,
-            )
-            .await?;
-
-        if update_result.rows_affected() == 0 {
-            return Err(Error::new(
-                ErrorKind::CatalogCommitConflicts,
-                format!("Commit conflicted for table: {table_ident}"),
-            )
-            .with_retryable(true));
-        }
-
-        Ok(staged_table)
+    async fn update_table_with_base(&self, commit: TableCommit, base: Table) -> Result<Table> {
+        self.commit_onto_base(commit, base).await
     }
 }
 
@@ -1030,9 +1045,14 @@ mod tests {
     use std::hash::Hash;
     use std::sync::Arc;
 
+    use futures::TryStreamExt;
     use iceberg::io::LocalFsStorageFactory;
-    use iceberg::spec::{NestedField, PartitionSpec, PrimitiveType, Schema, SortOrder, Type};
+    use iceberg::spec::{
+        DataContentType, DataFile, DataFileBuilder, DataFileFormat, NestedField, PartitionSpec,
+        PrimitiveType, Schema, SortOrder, Struct, Type,
+    };
     use iceberg::table::Table;
+    use iceberg::transaction::{ApplyTransactionAction, Transaction as IcebergTransaction};
     use iceberg::{Catalog, CatalogBuilder, Namespace, NamespaceIdent, TableCreation, TableIdent};
     use itertools::Itertools;
     use regex::Regex;
@@ -2078,6 +2098,132 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             format!("NamespaceNotFound => No such namespace: {non_existent_dst_namespace_ident:?}"),
+        );
+    }
+
+    fn rewrite_data_file(name: &str, rows: u64) -> DataFile {
+        DataFileBuilder::default()
+            .content(DataContentType::Data)
+            .file_path(format!("test/{name}.parquet"))
+            .file_format(DataFileFormat::Parquet)
+            .file_size_in_bytes(rows * 10)
+            .record_count(rows)
+            .partition_spec_id(0)
+            .partition(Struct::empty())
+            .build()
+            .unwrap()
+    }
+
+    async fn append_file<C: Catalog>(table: &Table, catalog: &C, file: DataFile) -> Table {
+        let tx = IcebergTransaction::new(table);
+        tx.fast_append()
+            .add_data_files([file])
+            .apply(tx)
+            .unwrap()
+            .commit(catalog)
+            .await
+            .unwrap()
+    }
+
+    async fn scanned_files(table: &Table) -> (Vec<String>, u64) {
+        let tasks: Vec<_> = table
+            .scan()
+            .build()
+            .unwrap()
+            .plan_files()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        let mut paths: Vec<_> = tasks
+            .iter()
+            .map(|task| task.data_file_path.clone())
+            .collect();
+        paths.sort();
+        let rows = tasks
+            .iter()
+            .map(|task| task.record_count.unwrap_or(0))
+            .sum();
+        (paths, rows)
+    }
+
+    #[tokio::test]
+    async fn sqlite_rewrite_is_atomic_and_rebases_over_an_intervening_append() {
+        let catalog = new_sql_catalog(temp_path(), Some("rewrite")).await;
+        let namespace = NamespaceIdent::new("atomic".into());
+        create_namespace(&catalog, &namespace).await;
+        let ident = TableIdent::new(namespace, "rows".into());
+        create_table(&catalog, &ident).await;
+        let table = catalog.load_table(&ident).await.unwrap();
+        let table = append_file(&table, &catalog, rewrite_data_file("a", 10)).await;
+
+        let tx = IcebergTransaction::new(&table);
+        let stale_rewrite = tx
+            .rewrite_files()
+            .add_data_files([rewrite_data_file("c", 5)])
+            .set_snapshot_properties(HashMap::from([(
+                "loglake.rewrite".to_string(),
+                "recluster".to_string(),
+            )]))
+            .apply(tx)
+            .unwrap();
+        let _intervening = append_file(&table, &catalog, rewrite_data_file("b", 20)).await;
+        let table = stale_rewrite.commit(&catalog).await.unwrap();
+        assert_eq!(
+            scanned_files(&table).await,
+            (
+                vec![
+                    "test/a.parquet".to_string(),
+                    "test/b.parquet".to_string(),
+                    "test/c.parquet".to_string(),
+                ],
+                35,
+            )
+        );
+        assert_eq!(
+            table
+                .metadata()
+                .current_snapshot()
+                .unwrap()
+                .summary()
+                .additional_properties
+                .get("loglake.rewrite")
+                .map(String::as_str),
+            Some("recluster")
+        );
+
+        let tx = IcebergTransaction::new(&table);
+        let table = tx
+            .rewrite_files()
+            .delete_files([rewrite_data_file("b", 20)])
+            .add_data_files([rewrite_data_file("d", 20)])
+            .apply(tx)
+            .unwrap()
+            .commit(&catalog)
+            .await
+            .unwrap();
+        assert_eq!(
+            scanned_files(&table).await,
+            (
+                vec![
+                    "test/a.parquet".to_string(),
+                    "test/c.parquet".to_string(),
+                    "test/d.parquet".to_string(),
+                ],
+                35,
+            )
+        );
+        assert_eq!(
+            table
+                .metadata()
+                .current_snapshot()
+                .unwrap()
+                .summary()
+                .additional_properties
+                .get("total-records")
+                .map(String::as_str),
+            Some("35")
         );
     }
 }
