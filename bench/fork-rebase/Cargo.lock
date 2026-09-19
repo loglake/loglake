@@ -2956,6 +2956,7 @@ dependencies = [
  "futures",
  "itertools 0.13.0",
  "loglake-bloom",
+ "loglake-index",
  "metrics",
  "minijinja",
  "mockall",
