@@ -161,20 +161,61 @@ cargo test --manifest-path bench/fork-rebase/Cargo.toml -p iceberg \
   arrow::reader::row_filter::tests::test_kleene_logic_or_behaviour
 ```
 
+## Slice 6 ledger — ordered and reverse streaming
+
+Recorded 2026-09-19. This is the complete reader-extension checklist retained
+in the public candidate tree; the pre-squash
+`docs/internal/FORK_REBASE_2026-09.md` is historical and is not restored.
+
+- [x] The candidate builder exposes task-order preservation, reverse traversal
+  and a per-reader reverse-chunk bound. The candidate storage adapter carries
+  the same three decisions used by production's query provider.
+- [x] Concurrent file opens drain in task order. Non-front batches are charged
+  to `LOGLAKE_ORDERED_DRAIN_BUFFER_BYTES`; the buffered-byte gauge returns to
+  zero when the stream is dropped.
+- [x] Reverse reads walk row groups from tail to head, split selections at row
+  group boundaries and reverse rows across batch boundaries. The first chunk
+  is one output batch and later chunks grow by four up to the configured cap.
+- [x] Predicate selections and positional deletes compose before chunks are
+  planned. Fixtures cover nulls, timestamp ties, multiple row groups, sparse
+  selected rows and deleted rows against materialized references.
+- [x] Filter-free decoded chunks use an immutable, byte-bounded cache. Bypass
+  skips both lookup and population. A guard releases single-flight ownership
+  on success, decode/open error, timeout and cancellation.
+- [x] Cold, warm and bypassed reverse reads return equal ordered rows. A
+  counter-based early-stop fixture drops a LIMIT-like stream after its first
+  batch and proves it fetches fewer data bytes than a full drain.
+- [x] The accumulated candidate library suite passes 1,410 unit tests and 85
+  doctests (12 ignored).
+- [x] Production selection remains on the complete 0.9.1 reader. Slice 7 must
+  adopt the candidate dependency graph atomically; no partial reader becomes
+  the default.
+
+Focused commands:
+
+```sh
+cargo test --manifest-path bench/fork-rebase/Cargo.toml -p iceberg \
+  arrow::reader::pipeline::tests::reverse_chunks
+cargo test --manifest-path bench/fork-rebase/Cargo.toml -p iceberg \
+  dropping_reverse_limit_stream_stops_before_full_decode
+cargo test --manifest-path bench/fork-rebase/Cargo.toml -p iceberg \
+  arrow::reader::reverse::tests
+```
+
 ## Refreshed divergence inventory
 
 The candidate core now carries the slice-2 catalog, transaction and Parquet
 writer behavior, the slice-3 OpenDAL upload controls, slice-4 reader caches and
-counters, and slice-5 pruning. Its packaging changes also gate the four
-`iceberg-storage-opendal` external-service tests described above. The schema
-and expiry caller differences remain in `adapter/src/lib.rs`; the candidate
-credential adapter is in `adapter/src/aws_credential.rs`.
+counters, slice-5 pruning, and slice-6 ordered/reverse streaming. Its packaging
+changes also gate the four `iceberg-storage-opendal` external-service tests
+described above. The schema and expiry caller differences remain in
+`adapter/src/lib.rs`; the candidate credential adapter is in
+`adapter/src/aws_credential.rs`.
 
 Upstream 0.10.1 now supplies schema evolution and snapshot expiry, so those two
 local actions do not move forward. The remaining production divergences still
-need later slices: ordered reading, decoded reverse chunks, segmented-index
-publication and final dependency adoption. Refresh the file
-inventory against the package sources with:
+need later slices: segmented-index publication and final dependency adoption.
+Refresh the file inventory against the package sources with:
 
 ```sh
 diff -rq --exclude=.cargo-ok --exclude=.cargo_vcs_info.json \

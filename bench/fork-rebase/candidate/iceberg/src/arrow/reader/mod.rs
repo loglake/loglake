@@ -39,11 +39,13 @@ const DEFAULT_METADATA_SIZE_HINT: usize = 512 * 1024;
 
 mod file_reader;
 mod options;
+mod ordered;
 mod pipeline;
 mod positional_deletes;
 mod predicate_visitor;
 mod projection;
 mod pruning;
+mod reverse;
 mod row_filter;
 pub use file_reader::ArrowFileReader;
 pub(crate) use options::ParquetReadOptions;
@@ -123,6 +125,9 @@ pub struct ArrowReaderBuilder {
     cache_bypass: bool,
     raw_prune_spec: Option<RawPruneSpec>,
     promoted_prune: Vec<PromotedPruneSpec>,
+    output_order_preserved: bool,
+    reverse: bool,
+    reversed_chunk_rows: Option<usize>,
 }
 
 impl ArrowReaderBuilder {
@@ -142,6 +147,9 @@ impl ArrowReaderBuilder {
             cache_bypass: false,
             raw_prune_spec: None,
             promoted_prune: Vec::new(),
+            output_order_preserved: false,
+            reverse: false,
+            reversed_chunk_rows: None,
         }
     }
 
@@ -227,6 +235,29 @@ impl ArrowReaderBuilder {
         self
     }
 
+    /// Emit file-task streams in task order while opening files concurrently.
+    ///
+    /// Callers may advertise concatenated files as ordered only when this is
+    /// enabled (or when data-file concurrency is one).
+    pub fn with_output_order_preserved(mut self, preserved: bool) -> Self {
+        self.output_order_preserved = preserved;
+        self
+    }
+
+    /// Read row groups and rows from the physical tail toward the head.
+    pub fn with_reverse(mut self, reverse: bool) -> Self {
+        self.reverse = reverse;
+        self
+    }
+
+    /// Set the maximum selected rows decoded by one reversed chunk.
+    ///
+    /// Zero keeps one whole row group per chunk.
+    pub fn with_reversed_chunk_rows(mut self, rows: usize) -> Self {
+        self.reversed_chunk_rows = Some(rows);
+        self
+    }
+
     /// Build the ArrowReader.
     pub fn build(self) -> ArrowReader {
         ArrowReader {
@@ -245,6 +276,9 @@ impl ArrowReaderBuilder {
             cache_bypass: self.cache_bypass,
             raw_prune_spec: self.raw_prune_spec,
             promoted_prune: self.promoted_prune,
+            output_order_preserved: self.output_order_preserved,
+            reverse: self.reverse,
+            reversed_chunk_rows: self.reversed_chunk_rows,
         }
     }
 }
@@ -266,4 +300,7 @@ pub struct ArrowReader {
     cache_bypass: bool,
     raw_prune_spec: Option<RawPruneSpec>,
     promoted_prune: Vec<PromotedPruneSpec>,
+    output_order_preserved: bool,
+    reverse: bool,
+    reversed_chunk_rows: Option<usize>,
 }
