@@ -1,11 +1,9 @@
-# Iceberg 0.10.1 candidate workspace
+# Iceberg 0.10.1 rebase ledger
 
-This workspace stages the fork rebase without changing the production
-workspace's dependency selection. `candidate/` began from the pristine
-published 0.10.1 sources for the three owned forks, without registry marker,
-package lock or generated dependency-list files. `baseline/` names the forced
-Arrow, Parquet, DataFusion, OpenDAL and reqsign graph. `adapter/` contains the
-first caller ports and old/new process-level equivalence fixtures.
+This ledger records the isolated qualification that preceded the atomic
+production adoption. The temporary `candidate/`, `baseline/` and `adapter/`
+trees were removed in slice 7 after their sources and regressions moved into
+`third_party/` and the permanent workspace suites.
 
 The candidate keeps upstream's declared Rust 1.94 minimum. The repository still
 pins Rust 1.95.0 in `rust-toolchain.toml`; the candidate does not change it.
@@ -152,14 +150,7 @@ The focused matrix covers:
 | stale Puffin stamp | falls back to the exact scan | the stale index is not used |
 | row-group and positional-delete intersection | the final selection contains only live indexed rows | both mechanisms remove rows |
 
-Focused commands:
-
-```sh
-cargo test --manifest-path bench/fork-rebase/Cargo.toml -p iceberg \
-  arrow::reader::pruning::tests
-cargo test --manifest-path bench/fork-rebase/Cargo.toml -p iceberg \
-  arrow::reader::row_filter::tests::test_kleene_logic_or_behaviour
-```
+The permanent fork gate is `scripts/check-fork-tests.sh --fork iceberg`.
 
 ## Slice 6 ledger — ordered and reverse streaming
 
@@ -187,56 +178,37 @@ in the public candidate tree; the pre-squash
   batch and proves it fetches fewer data bytes than a full drain.
 - [x] The accumulated candidate library suite passes 1,410 unit tests and 85
   doctests (12 ignored).
-- [x] Production selection remains on the complete 0.9.1 reader. Slice 7 must
-  adopt the candidate dependency graph atomically; no partial reader becomes
-  the default.
+- [x] The complete reader was held outside production selection until slice 7
+  adopted the dependency graph atomically.
 
-Focused commands:
+The permanent fork gate is `scripts/check-fork-tests.sh --fork iceberg`.
 
-```sh
-cargo test --manifest-path bench/fork-rebase/Cargo.toml -p iceberg \
-  arrow::reader::pipeline::tests::reverse_chunks
-cargo test --manifest-path bench/fork-rebase/Cargo.toml -p iceberg \
-  dropping_reverse_limit_stream_stops_before_full_decode
-cargo test --manifest-path bench/fork-rebase/Cargo.toml -p iceberg \
-  arrow::reader::reverse::tests
-```
+## Slice 7 ledger — atomic adoption
 
-## Refreshed divergence inventory
+Recorded 2026-09-19:
 
-The candidate core now carries the slice-2 catalog, transaction and Parquet
-writer behavior, the slice-3 OpenDAL upload controls, slice-4 reader caches and
-counters, slice-5 pruning, and slice-6 ordered/reverse streaming. Its packaging
-changes also gate the four `iceberg-storage-opendal` external-service tests
-described above. The schema and expiry caller differences remain in
-`adapter/src/lib.rs`; the candidate credential adapter is in
-`adapter/src/aws_credential.rs`.
+- The tested 0.10.1 sources replaced all three production forks together. The
+  seven workspace consumers and root lockfile changed in the same adoption.
+- The application resolves one Arrow/Parquet 58.4, DataFusion 53.1, OpenDAL
+  0.57 and reqsign 3 graph. The query server's direct `arrow-json` dependency
+  and storage's `iceberg-datafusion` dependency follow that graph.
+- `LoglakeIcebergTableScan` uses `Arc<PlanProperties>` and the modular reader's
+  runtime plus `ScanResult` contract at every call site. DataFusion SQL AST and
+  OpenDAL credential APIs were adapted without changing read-only admission or
+  credential fallback policy.
+- Segmented-index publication, clipped lookup, cache bounds and metric label
+  catalogs moved into the modular writer and reader before the switch.
+- Schema, expiry and AWS credential adapter regressions now run in permanent
+  storage/fork suites. The promoted fork sources retain the pruning,
+  ordered/reverse, cache and transaction tests accumulated in slices 1–6.
+- `third_party/*/.cargo_vcs_info.json` and `VENDORED.md` identify upstream
+  commit `04ae06bdb15a6fd7c7927d29d4e0f6a33de0f1f9`. The temporary fork copies
+  and their private lockfiles were removed.
 
-Upstream 0.10.1 now supplies schema evolution and snapshot expiry, so those two
-local actions do not move forward. The remaining production divergences still
-need later slices: segmented-index publication and final dependency adoption.
-Refresh the file inventory against the package sources with:
-
-```sh
-diff -rq --exclude=.cargo-ok --exclude=.cargo_vcs_info.json \
-  "$CARGO_HOME/registry/src/index.crates.io-"*/iceberg-0.10.1 \
-  bench/fork-rebase/candidate/iceberg
-```
-
-Commands:
+Permanent gates:
 
 ```sh
-CARGO_HOME="$TMPDIR/cargo-home" cargo check \
-  --manifest-path bench/fork-rebase/Cargo.toml --workspace --all-targets
-CARGO_HOME="$TMPDIR/cargo-home" cargo test \
-  --manifest-path bench/fork-rebase/Cargo.toml -p fork-rebase-adapter
-cargo fmt --manifest-path bench/fork-rebase/adapter/Cargo.toml -- --check
-# Repeat the fmt check for baseline/ and each candidate manifest.
-CARGO_HOME="$TMPDIR/cargo-home" cargo clippy \
-  --manifest-path bench/fork-rebase/Cargo.toml \
-  --workspace --all-targets -- -D warnings
+cargo test --workspace
+scripts/check-fork-tests.sh
+scripts/ci-local.sh --strict
 ```
-
-Production remains on the root workspace's Arrow 57, DataFusion 52, OpenDAL
-0.55 and Iceberg 0.9.1 selection. Its schema tests are the production-side gate
-for this slice.
