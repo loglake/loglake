@@ -1,0 +1,16 @@
+[package]
+name = "fork-rebase-adapter"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+async-trait = "0.1"
+iceberg = { version = "0.10.1", path = "../candidate/iceberg" }
+iceberg-old = { package = "iceberg", path = "../../../third_party/iceberg" }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[dev-dependencies]

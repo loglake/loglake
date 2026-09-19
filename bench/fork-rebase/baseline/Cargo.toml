@@ -1,0 +1,19 @@
+[package]
+name = "fork-rebase-baseline"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+arrow = "58"
+datafusion = "53.1.0"
+iceberg = { version = "0.10.1", path = "../candidate/iceberg" }
+iceberg-catalog-sql = { version = "0.10.1", path = "../candidate/iceberg-catalog-sql" }
+iceberg-datafusion = "0.10.1"
+iceberg-storage-opendal = { version = "0.10.1", path = "../candidate/iceberg-storage-opendal" }
+opendal = "0.57"
+parquet = "58"
+reqsign-aws-v4 = "3"
+reqsign-core = "3"
