@@ -43,11 +43,72 @@ mod pipeline;
 mod positional_deletes;
 mod predicate_visitor;
 mod projection;
+mod pruning;
 mod row_filter;
 pub use file_reader::ArrowFileReader;
 pub(crate) use options::ParquetReadOptions;
 use predicate_visitor::{CollectFieldIdVisitor, PredicateConverter};
 use projection::{add_fallback_field_ids_to_arrow_schema, apply_name_mapping_to_arrow_schema};
+
+/// Conservative text-pruning hints. The caller must still apply its exact
+/// predicate to the rows returned by the reader.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RawPruneSpec {
+    /// Column the hints apply to.
+    pub column: String,
+    /// Normalized tokens that must all occur.
+    pub all_terms: Vec<String>,
+    /// Normalized tokens where at least one must occur.
+    pub any_terms: Vec<String>,
+    /// Substrings conservatively answered by trigram blooms.
+    pub substrings: Vec<String>,
+    /// Substrings eligible for inverted-index row selection.
+    pub index_substrings: Vec<String>,
+    /// Whether the hints came from the full-text UDF.
+    pub fts_udf: bool,
+}
+
+impl Default for RawPruneSpec {
+    fn default() -> Self {
+        Self {
+            column: "raw".to_string(),
+            all_terms: Vec::new(),
+            any_terms: Vec::new(),
+            substrings: Vec::new(),
+            index_substrings: Vec::new(),
+            fts_udf: false,
+        }
+    }
+}
+
+impl RawPruneSpec {
+    /// Construct the legacy single-substring pruning channel.
+    pub fn from_raw_substring_filter(substr: Option<String>) -> Option<Self> {
+        substr.map(|substr| Self {
+            substrings: vec![substr.clone()],
+            index_substrings: vec![substr],
+            ..Self::default()
+        })
+    }
+
+    /// Whether this spec carries no usable hints.
+    pub fn is_empty(&self) -> bool {
+        self.all_terms.is_empty()
+            && self.any_terms.is_empty()
+            && self.substrings.is_empty()
+            && self.index_substrings.is_empty()
+    }
+}
+
+/// A promoted Utf8 column and the equality values its min/max statistics may
+/// conservatively prune.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PromotedPruneSpec {
+    /// Promoted top-level column name.
+    pub column: String,
+    /// Equality candidates; a group survives if any value may be present.
+    pub values: Vec<String>,
+}
 
 /// Builder to create ArrowReader
 pub struct ArrowReaderBuilder {
@@ -60,6 +121,8 @@ pub struct ArrowReaderBuilder {
     runtime: Runtime,
     scan_counters: Option<Arc<ScanCounters>>,
     cache_bypass: bool,
+    raw_prune_spec: Option<RawPruneSpec>,
+    promoted_prune: Vec<PromotedPruneSpec>,
 }
 
 impl ArrowReaderBuilder {
@@ -77,6 +140,8 @@ impl ArrowReaderBuilder {
             runtime,
             scan_counters: None,
             cache_bypass: false,
+            raw_prune_spec: None,
+            promoted_prune: Vec::new(),
         }
     }
 
@@ -144,6 +209,24 @@ impl ArrowReaderBuilder {
         self
     }
 
+    /// Set conservative raw-text pruning hints.
+    pub fn with_raw_prune_spec(mut self, spec: Option<RawPruneSpec>) -> Self {
+        self.raw_prune_spec = spec.filter(|spec| !spec.is_empty());
+        self
+    }
+
+    /// Set the legacy single-substring pruning hint.
+    pub fn with_raw_substring_filter(mut self, term: Option<String>) -> Self {
+        self.raw_prune_spec = RawPruneSpec::from_raw_substring_filter(term);
+        self
+    }
+
+    /// Set promoted-column min/max pruning hints.
+    pub fn with_promoted_prune(mut self, specs: Vec<PromotedPruneSpec>) -> Self {
+        self.promoted_prune = specs;
+        self
+    }
+
     /// Build the ArrowReader.
     pub fn build(self) -> ArrowReader {
         ArrowReader {
@@ -160,6 +243,8 @@ impl ArrowReaderBuilder {
             parquet_read_options: self.parquet_read_options,
             scan_counters: self.scan_counters,
             cache_bypass: self.cache_bypass,
+            raw_prune_spec: self.raw_prune_spec,
+            promoted_prune: self.promoted_prune,
         }
     }
 }
@@ -179,4 +264,6 @@ pub struct ArrowReader {
     parquet_read_options: ParquetReadOptions,
     scan_counters: Option<Arc<ScanCounters>>,
     cache_bypass: bool,
+    raw_prune_spec: Option<RawPruneSpec>,
+    promoted_prune: Vec<PromotedPruneSpec>,
 }

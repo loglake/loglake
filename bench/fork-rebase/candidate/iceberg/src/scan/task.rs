@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use futures::stream::BoxStream;
@@ -30,6 +31,17 @@ use crate::spec::{
 
 /// A stream of [`FileScanTask`].
 pub type FileScanTaskStream = BoxStream<'static, Result<FileScanTask>>;
+
+/// Statistics-table metadata for one blob candidate attached to a file scan task.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StatisticsBlobReference {
+    /// Statistics file path containing the candidate blob.
+    pub statistics_path: String,
+    /// Blob type recorded in table metadata.
+    pub blob_type: String,
+    /// Blob properties used for data-file and column matching.
+    pub properties: HashMap<String, String>,
+}
 
 /// Serialization helper that always returns NotImplementedError.
 /// Used for fields that should not be serialized but we want to be explicit about it.
@@ -122,6 +134,11 @@ pub struct FileScanTask {
 
     /// Whether this scan task should treat column names as case-sensitive when binding predicates.
     pub case_sensitive: bool,
+
+    /// Candidate statistics blobs for this data file, derived during planning.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[builder(default)]
+    pub statistics_blobs: Vec<StatisticsBlobReference>,
 }
 
 impl FileScanTask {

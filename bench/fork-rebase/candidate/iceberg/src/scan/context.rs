@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use futures::channel::mpsc::Sender;
@@ -25,7 +26,7 @@ use crate::expr::{Bind, BoundPredicate, Predicate};
 use crate::io::object_cache::ObjectCache;
 use crate::scan::{
     BoundPredicates, ExpressionEvaluatorCache, FileScanTask, ManifestEvaluatorCache,
-    PartitionFilterCache,
+    PartitionFilterCache, StatisticsBlobReference,
 };
 use crate::spec::{
     ManifestContentType, ManifestEntryRef, ManifestFile, ManifestList, NameMapping, SchemaRef,
@@ -48,6 +49,7 @@ pub(crate) struct ManifestFileContext {
     delete_file_index: DeleteFileIndex,
     name_mapping: Option<Arc<NameMapping>>,
     case_sensitive: bool,
+    statistics_blobs_by_file: Arc<HashMap<String, Vec<StatisticsBlobReference>>>,
 }
 
 /// Wraps a [`ManifestEntryRef`] alongside the objects that are needed
@@ -63,6 +65,7 @@ pub(crate) struct ManifestEntryContext {
     pub delete_file_index: DeleteFileIndex,
     pub name_mapping: Option<Arc<NameMapping>>,
     pub case_sensitive: bool,
+    pub statistics_blobs_by_file: Arc<HashMap<String, Vec<StatisticsBlobReference>>>,
 }
 
 impl ManifestFileContext {
@@ -80,6 +83,7 @@ impl ManifestFileContext {
             delete_file_index,
             name_mapping,
             case_sensitive,
+            statistics_blobs_by_file,
         } = self;
 
         let manifest = object_cache.get_manifest(&manifest_file).await?;
@@ -96,6 +100,7 @@ impl ManifestFileContext {
                 delete_file_index: delete_file_index.clone(),
                 name_mapping: name_mapping.clone(),
                 case_sensitive,
+                statistics_blobs_by_file: statistics_blobs_by_file.clone(),
             };
 
             sender
@@ -139,6 +144,12 @@ impl ManifestEntryContext {
             .with_partition_spec(None)
             .with_name_mapping(self.name_mapping)
             .with_case_sensitive(self.case_sensitive)
+            .with_statistics_blobs(
+                self.statistics_blobs_by_file
+                    .get(self.manifest_entry.file_path())
+                    .cloned()
+                    .unwrap_or_default(),
+            )
             .build())
     }
 }
@@ -161,6 +172,7 @@ pub(crate) struct PlanContext {
     pub partition_filter_cache: Arc<PartitionFilterCache>,
     pub manifest_evaluator_cache: Arc<ManifestEvaluatorCache>,
     pub expression_evaluator_cache: Arc<ExpressionEvaluatorCache>,
+    pub statistics_blobs_by_file: Arc<HashMap<String, Vec<StatisticsBlobReference>>>,
 }
 
 impl PlanContext {
@@ -284,6 +296,7 @@ impl PlanContext {
             delete_file_index,
             name_mapping: self.name_mapping.clone(),
             case_sensitive: self.case_sensitive,
+            statistics_blobs_by_file: self.statistics_blobs_by_file.clone(),
         }
     }
 }

@@ -130,6 +130,9 @@ version = "0.13"
 [dependencies.loglake-bloom]
 path = "../../../../crates/loglake-bloom"
 
+[dependencies.loglake-index]
+path = "../../../../crates/loglake-index"
+
 [dependencies.metrics]
 version = "0.24"
 
