@@ -2123,6 +2123,7 @@ OVERVIEW_DASHBOARD = DASHBOARD_DIR / "loglake-overview.json"
 # `puffin_blob_cache_series_are_preregistered` in loglake-storage.
 TEXT_INDEX_GROUPINGS = {
     "loglake_iceberg_text_index_startup_seconds": "stage",
+    "loglake_index_footer_checksum_refused_total": "reason",
     "loglake_iceberg_parsed_index_cache_lookups_total": "outcome",
     "loglake_iceberg_parsed_index_cache_evictions_total": "reason",
     "loglake_iceberg_puffin_blob_cache_lookups_total": "outcome",
