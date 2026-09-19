@@ -365,7 +365,12 @@ impl OpenDalStorage {
         // Transient errors are common for object stores; we retry temporary
         // failures with exponential backoff. The retry behavior also
         // benefits non-object-store backends.
-        let operator = operator.layer(TimeoutLayer::new()).layer(RetryLayer::new());
+        let operator = operator.layer(TimeoutLayer::new()).layer(
+            RetryLayer::new()
+                .with_jitter()
+                .with_min_delay(std::time::Duration::from_millis(100))
+                .with_max_times(5),
+        );
         Ok((operator, relative_path))
     }
 
@@ -525,9 +530,36 @@ impl Storage for OpenDalStorage {
 
     async fn writer(&self, path: &str) -> Result<Box<dyn FileWrite>> {
         let (op, relative_path) = self.create_operator(&path)?;
-        Ok(Box::new(OpenDalWriter(
-            op.writer(relative_path).await.map_err(from_opendal_error)?,
-        )))
+        let concurrent = multipart_concurrency();
+        let chunk = multipart_chunk_bytes();
+        metrics::gauge!("loglake_object_store_write_concurrency").set(concurrent as f64);
+        metrics::gauge!("loglake_object_store_write_chunk_bytes").set(chunk.unwrap_or(0) as f64);
+
+        let writer = if concurrent > 0 {
+            let mut builder = op.writer_with(relative_path).concurrent(concurrent);
+            if let Some(chunk) = chunk {
+                builder = builder.chunk(chunk);
+            }
+            builder.await.map_err(from_opendal_error)?
+        } else {
+            op.writer(relative_path).await.map_err(from_opendal_error)?
+        };
+
+        let class = UPLOAD_CLASS.try_with(|class| *class).unwrap_or_default();
+        let permit = upload_permits(class)
+            .acquire()
+            .await
+            .expect("upload semaphore is never closed");
+        permit.forget();
+        metrics::counter!(
+            "loglake_object_store_writer_opened_total",
+            "class" => class.label()
+        )
+        .increment(1);
+        Ok(Box::new(OpenDalWriter {
+            writer,
+            permit: Some(ClassPermit(class)),
+        }))
     }
 
     async fn delete(&self, path: &str) -> Result<()> {
@@ -608,28 +640,309 @@ impl FileRead for OpenDalReader {
     }
 }
 
-/// Wrapper around `opendal::Writer` that implements `FileWrite`.
-pub(crate) struct OpenDalWriter(pub(crate) opendal::Writer);
+/// Workload class for independently bounded object-store uploads.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UploadClass {
+    /// WAL-to-Iceberg commits and every caller outside a compaction scope.
+    #[default]
+    Drain,
+    /// Compaction rewrites.
+    Compaction,
+}
+
+impl UploadClass {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Drain => "drain",
+            Self::Compaction => "compaction",
+        }
+    }
+}
+
+tokio::task_local! {
+    static UPLOAD_CLASS: UploadClass;
+}
+
+/// Account every object-store writer opened by `future` to `class`.
+pub async fn with_upload_class<F: std::future::Future>(class: UploadClass, future: F) -> F::Output {
+    UPLOAD_CLASS.scope(class, future).await
+}
+
+/// Return the number of immediately available permits for `class`.
+pub fn available_upload_permits(class: UploadClass) -> usize {
+    upload_permits(class).available_permits()
+}
+
+fn upload_permits(class: UploadClass) -> &'static tokio::sync::Semaphore {
+    use std::sync::OnceLock;
+
+    static DRAIN: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
+    static COMPACTION: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
+    match class {
+        UploadClass::Drain => DRAIN.get_or_init(|| {
+            tokio::sync::Semaphore::new(write_permits("LOGLAKE_S3_WRITE_PERMITS_DRAIN", 64))
+        }),
+        UploadClass::Compaction => COMPACTION.get_or_init(|| {
+            tokio::sync::Semaphore::new(write_permits("LOGLAKE_S3_WRITE_PERMITS_COMPACTION", 32))
+        }),
+    }
+}
+
+fn multipart_concurrency() -> usize {
+    write_concurrency_from(
+        std::env::var("LOGLAKE_OBJECT_STORE_WRITE_CONCURRENCY")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn write_concurrency_from(configured: Option<&str>) -> usize {
+    configured
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0)
+}
+
+fn multipart_chunk_bytes() -> Option<usize> {
+    write_chunk_bytes_from(
+        std::env::var("LOGLAKE_OBJECT_STORE_WRITE_CHUNK_MB")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn write_chunk_bytes_from(configured: Option<&str>) -> Option<usize> {
+    configured
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|mb| *mb > 0)
+        .and_then(|mb| mb.checked_mul(1024 * 1024))
+}
+
+fn write_permits(variable: &str, default: usize) -> usize {
+    write_permits_from(std::env::var(variable).ok().as_deref(), default)
+}
+
+fn write_permits_from(configured: Option<&str>, default: usize) -> usize {
+    configured
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|permits| *permits > 0)
+        .unwrap_or(default)
+}
+
+struct ClassPermit(UploadClass);
+
+impl Drop for ClassPermit {
+    fn drop(&mut self) {
+        upload_permits(self.0).add_permits(1);
+    }
+}
+
+/// Wrapper around `opendal::Writer` that holds one class permit until close,
+/// failure, cancellation, or drop.
+pub(crate) struct OpenDalWriter {
+    writer: opendal::Writer,
+    permit: Option<ClassPermit>,
+}
+
+impl OpenDalWriter {
+    fn release_on_error<T>(&mut self, result: Result<T>) -> Result<T> {
+        if result.is_err() {
+            self.permit.take();
+        }
+        result
+    }
+}
 
 #[async_trait]
 impl FileWrite for OpenDalWriter {
     async fn write(&mut self, bs: Bytes) -> Result<()> {
-        Ok(opendal::Writer::write(&mut self.0, bs)
+        let result = opendal::Writer::write(&mut self.writer, bs)
             .await
-            .map_err(from_opendal_error)?)
+            .map_err(from_opendal_error);
+        self.release_on_error(result)
     }
 
     async fn close(&mut self) -> Result<()> {
-        let _ = opendal::Writer::close(&mut self.0)
+        let result = opendal::Writer::close(&mut self.writer)
             .await
-            .map_err(from_opendal_error)?;
-        Ok(())
+            .map(|_| ())
+            .map_err(from_opendal_error);
+        self.permit.take();
+        result
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+    #[test]
+    fn upload_settings_keep_production_defaults_and_reject_invalid_values() {
+        assert_eq!(write_concurrency_from(None), 0);
+        assert_eq!(write_concurrency_from(Some("0")), 0);
+        assert_eq!(write_concurrency_from(Some("invalid")), 0);
+        assert_eq!(write_concurrency_from(Some("4")), 4);
+
+        assert_eq!(write_chunk_bytes_from(None), None);
+        assert_eq!(write_chunk_bytes_from(Some("0")), None);
+        assert_eq!(write_chunk_bytes_from(Some("invalid")), None);
+        assert_eq!(write_chunk_bytes_from(Some("32")), Some(32 * 1024 * 1024));
+        assert_eq!(write_chunk_bytes_from(Some(&usize::MAX.to_string())), None);
+
+        assert_eq!(write_permits_from(None, 64), 64);
+        assert_eq!(write_permits_from(Some("0"), 64), 64);
+        assert_eq!(write_permits_from(Some("invalid"), 64), 64);
+        assert_eq!(write_permits_from(Some("8"), 64), 8);
+    }
+
+    #[cfg(feature = "opendal-memory")]
+    #[tokio::test]
+    async fn writers_publish_metrics_and_release_class_permits() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        recorder.install().expect("install debugging recorder");
+
+        let storage = OpenDalStorage::Memory(default_memory_operator());
+        let drain_before = available_upload_permits(UploadClass::Drain);
+        let compaction_before = available_upload_permits(UploadClass::Compaction);
+
+        let mut drain = Storage::writer(&storage, "memory:/drain")
+            .await
+            .expect("open drain writer");
+        assert_eq!(
+            available_upload_permits(UploadClass::Drain),
+            drain_before - 1
+        );
+        assert_eq!(
+            available_upload_permits(UploadClass::Compaction),
+            compaction_before
+        );
+        drain.close().await.expect("close drain writer");
+        assert_eq!(available_upload_permits(UploadClass::Drain), drain_before);
+
+        let compaction = with_upload_class(
+            UploadClass::Compaction,
+            Storage::writer(&storage, "memory:/compaction"),
+        )
+        .await
+        .expect("open compaction writer");
+        assert_eq!(
+            available_upload_permits(UploadClass::Compaction),
+            compaction_before - 1
+        );
+        drop(compaction);
+        assert_eq!(
+            available_upload_permits(UploadClass::Compaction),
+            compaction_before
+        );
+
+        let permit = upload_permits(UploadClass::Drain)
+            .acquire()
+            .await
+            .expect("take failure fixture permit");
+        permit.forget();
+        let mut failing = OpenDalWriter {
+            writer: default_memory_operator()
+                .writer("failure")
+                .await
+                .expect("open failure fixture writer"),
+            permit: Some(ClassPermit(UploadClass::Drain)),
+        };
+        assert_eq!(
+            available_upload_permits(UploadClass::Drain),
+            drain_before - 1
+        );
+        let failure: Result<()> = Err(Error::new(ErrorKind::Unexpected, "fixture failure"));
+        assert!(failing.release_on_error(failure).is_err());
+        assert_eq!(
+            available_upload_permits(UploadClass::Drain),
+            drain_before,
+            "writer errors must release their permit"
+        );
+
+        let (opened_tx, opened_rx) = tokio::sync::oneshot::channel();
+        let cancelled_storage = storage.clone();
+        let cancelled = tokio::spawn(async move {
+            with_upload_class(UploadClass::Compaction, async move {
+                let writer = Storage::writer(&cancelled_storage, "memory:/cancelled-open")
+                    .await
+                    .expect("open cancellation fixture writer");
+                opened_tx.send(()).expect("signal open writer");
+                std::future::pending::<()>().await;
+                drop(writer);
+            })
+            .await;
+        });
+        opened_rx.await.expect("writer opened");
+        assert_eq!(
+            available_upload_permits(UploadClass::Compaction),
+            compaction_before - 1
+        );
+        cancelled.abort();
+        let _ = cancelled.await;
+        assert_eq!(
+            available_upload_permits(UploadClass::Compaction),
+            compaction_before,
+            "cancelling a task that owns a writer must release its permit"
+        );
+
+        let held = upload_permits(UploadClass::Compaction)
+            .acquire_many(compaction_before as u32)
+            .await
+            .expect("hold compaction pool");
+        let waiting_storage = storage.clone();
+        let waiting = tokio::spawn(async move {
+            with_upload_class(
+                UploadClass::Compaction,
+                Storage::writer(&waiting_storage, "memory:/cancelled"),
+            )
+            .await
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !waiting.is_finished(),
+            "writer must wait for its class permit"
+        );
+        waiting.abort();
+        let _ = waiting.await;
+        drop(held);
+        assert_eq!(
+            available_upload_permits(UploadClass::Compaction),
+            compaction_before,
+            "cancelling a waiting writer must not consume a permit"
+        );
+
+        let snapshot = snapshotter.snapshot().into_vec();
+        let value = |name: &str, class: Option<&str>| {
+            snapshot.iter().find_map(|(key, _, _, value)| {
+                let class_matches = class.is_none_or(|expected| {
+                    key.key()
+                        .labels()
+                        .any(|label| label.key() == "class" && label.value() == expected)
+                });
+                (key.key().name() == name && class_matches).then_some(value)
+            })
+        };
+        assert!(matches!(
+            value("loglake_object_store_write_concurrency", None),
+            Some(DebugValue::Gauge(_))
+        ));
+        assert!(matches!(
+            value("loglake_object_store_write_chunk_bytes", None),
+            Some(DebugValue::Gauge(_))
+        ));
+        assert_eq!(
+            value("loglake_object_store_writer_opened_total", Some("drain")),
+            Some(&DebugValue::Counter(1))
+        );
+        assert_eq!(
+            value(
+                "loglake_object_store_writer_opened_total",
+                Some("compaction")
+            ),
+            Some(&DebugValue::Counter(2))
+        );
+    }
 
     #[cfg(feature = "opendal-memory")]
     #[test]

@@ -58,18 +58,46 @@ Recorded 2026-09-19:
 - Reader behavior and OpenDAL remain outside this slice. The root workspace's
   production dependency selection is unchanged.
 
+## Slice 3 ledger — uploads and AWS credentials
+
+Recorded 2026-09-19:
+
+- Candidate OpenDAL writers retain the production multipart concurrency and
+  chunk resolvers. Their defaults remain sequential writes and the service's
+  chunk size; invalid and zero values preserve those defaults.
+- Effective concurrency and chunk bytes remain gauges, and every opened writer
+  increments the class-labelled counter.
+- Drain and compaction keep separate permit pools. Memory-backed writer
+  fixtures prove release on close, write failure, owner cancellation and drop,
+  plus cancellation while waiting for a permit.
+- Retry retains jitter, a 100 ms minimum and five attempts. OpenDAL 0.57's
+  `TimeoutLayer` stays inside `RetryLayer`, so each attempt has its own timeout
+  and a timed-out inner future cannot leave retry state half-consumed.
+- The candidate adapter implements reqsign 3 `ProvideCredential` in the order
+  static keys, IRSA, ECS and IMDSv2. A configured relative or full ECS URI
+  suppresses IMDS fallback, including when ECS returns an error.
+- Each metadata provider has a three-second bound. Provider errors and timeouts
+  return to the caller instead of falling through to a lower-priority source.
+- Hermetic contexts exercise real reqsign IRSA, ECS and IMDSv2 providers. They
+  also prove rotating credentials and expiry pass through the adapter without
+  process environment mutation or live AWS calls.
+- Candidate `file`, `memory`, `s3` and `s3a` factories construct input and
+  output paths without I/O. Unsupported and schemeless warehouse URLs fail.
+- Production stays on Iceberg 0.9.1, OpenDAL 0.55 and reqsign 0.16 until the
+  adoption slice.
+
 ## Refreshed divergence inventory
 
-The candidate core now carries the slice-2 catalog, transaction and writer
-behavior. Its packaging changes also gate the four
-`iceberg-storage-opendal` external-service tests described above. The schema
-and expiry caller differences remain in `adapter/src/lib.rs` and its fixture
-runners.
+The candidate core now carries the slice-2 catalog, transaction and Parquet
+writer behavior plus the slice-3 OpenDAL upload controls. Its packaging changes
+also gate the four `iceberg-storage-opendal` external-service tests described
+above. The schema and expiry caller differences remain in `adapter/src/lib.rs`;
+the candidate credential adapter is in `adapter/src/aws_credential.rs`.
 
 Upstream 0.10.1 now supplies schema evolution and snapshot expiry, so those two
 local actions do not move forward. The remaining production divergences still
 need later slices: reader pruning/caches/order/counters, segmented-index
-publication, and OpenDAL upload controls/permits. Refresh the file inventory
+publication and final dependency adoption. Refresh the file inventory
 against the package sources with:
 
 ```sh
