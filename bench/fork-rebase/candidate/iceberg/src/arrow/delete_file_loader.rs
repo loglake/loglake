@@ -79,7 +79,8 @@ impl BasicDeleteFileLoader {
             &self.file_io,
             file_size_in_bytes,
             parquet_read_options,
-            self.scan_metrics.bytes_read_counter(),
+            self.scan_metrics.clone(),
+            false,
         )
         .await?;
 
@@ -148,8 +149,8 @@ mod tests {
         let table_location = tmp_dir.path();
         let file_io = FileIO::new_with_fs();
 
-        let scan_metrics = ScanMetrics::new();
-        let delete_file_loader = BasicDeleteFileLoader::new(file_io.clone(), scan_metrics);
+        let scan_metrics = ScanMetrics::new(Arc::new(crate::arrow::ScanCounters::default()));
+        let delete_file_loader = BasicDeleteFileLoader::new(file_io.clone(), scan_metrics.clone());
 
         let file_scan_tasks = setup(table_location);
 
@@ -164,5 +165,24 @@ mod tests {
         let result = result.try_collect::<Vec<_>>().await.unwrap();
 
         assert_eq!(result.len(), 1);
+        let counters = scan_metrics.scan_counters();
+        let load = |counter: &std::sync::atomic::AtomicU64| {
+            counter.load(std::sync::atomic::Ordering::Relaxed)
+        };
+        assert!(
+            load(&counters.object_store_reads) > 0,
+            "delete-file reads share the scan's physical I/O counters"
+        );
+        assert!(load(&counters.bytes_footer) > 0);
+        assert!(load(&counters.bytes_index) > 0);
+        assert!(load(&counters.bytes_data) > 0);
+        assert_eq!(
+            scan_metrics.bytes_read(),
+            load(&counters.bytes_footer)
+                + load(&counters.bytes_index)
+                + load(&counters.bytes_data)
+                + load(&counters.bytes_other),
+            "upstream ScanMetrics is the detailed phase sum, not a second byte counter"
+        );
     }
 }

@@ -25,7 +25,7 @@ use tokio::sync::oneshot::{Receiver, channel};
 
 use super::delete_filter::{DeleteFilter, PosDelLoadAction};
 use crate::arrow::delete_file_loader::BasicDeleteFileLoader;
-use crate::arrow::scan_metrics::ScanMetrics;
+use crate::arrow::scan_metrics::{ScanCounters, ScanMetrics};
 use crate::arrow::{arrow_primitive_to_literal, arrow_schema_to_schema};
 use crate::delete_vector::DeleteVector;
 use crate::expr::Predicate::AlwaysTrue;
@@ -84,7 +84,7 @@ impl CachingDeleteFileLoader {
         concurrency_limit_data_files: usize,
         runtime: Runtime,
     ) -> Self {
-        let scan_metrics = ScanMetrics::new();
+        let scan_metrics = ScanMetrics::new(Arc::new(ScanCounters::default()));
         CachingDeleteFileLoader {
             basic_delete_file_loader: BasicDeleteFileLoader::new(file_io, scan_metrics),
             concurrency_limit_data_files,
@@ -636,7 +636,7 @@ mod tests {
         let eq_delete_file_path = setup_write_equality_delete_file_1(table_location);
 
         let basic_delete_file_loader =
-            BasicDeleteFileLoader::new(file_io.clone(), ScanMetrics::new());
+            BasicDeleteFileLoader::new(file_io.clone(), ScanMetrics::default());
         let record_batch_stream = basic_delete_file_loader
             .parquet_to_batch_stream(
                 &eq_delete_file_path,
@@ -851,7 +851,7 @@ mod tests {
 
         let file_io = FileIO::new_with_fs();
         let basic_delete_file_loader =
-            BasicDeleteFileLoader::new(file_io.clone(), ScanMetrics::new());
+            BasicDeleteFileLoader::new(file_io.clone(), ScanMetrics::default());
 
         let batch_stream = basic_delete_file_loader
             .parquet_to_batch_stream(
@@ -1035,7 +1035,7 @@ mod tests {
         writer.close().unwrap();
 
         let basic_delete_file_loader =
-            BasicDeleteFileLoader::new(file_io.clone(), ScanMetrics::new());
+            BasicDeleteFileLoader::new(file_io.clone(), ScanMetrics::default());
         let record_batch_stream = basic_delete_file_loader
             .parquet_to_batch_stream(&path, std::fs::metadata(&path).unwrap().len())
             .await

@@ -17,6 +17,9 @@
 
 //! Parquet file data reader
 
+use std::sync::Arc;
+
+use crate::arrow::ScanCounters;
 use crate::arrow::caching_delete_file_loader::CachingDeleteFileLoader;
 use crate::io::FileIO;
 use crate::runtime::Runtime;
@@ -55,6 +58,8 @@ pub struct ArrowReaderBuilder {
     row_selection_enabled: bool,
     parquet_read_options: ParquetReadOptions,
     runtime: Runtime,
+    scan_counters: Option<Arc<ScanCounters>>,
+    cache_bypass: bool,
 }
 
 impl ArrowReaderBuilder {
@@ -70,6 +75,8 @@ impl ArrowReaderBuilder {
             row_selection_enabled: false,
             parquet_read_options: ParquetReadOptions::builder().build(),
             runtime,
+            scan_counters: None,
+            cache_bypass: false,
         }
     }
 
@@ -124,6 +131,19 @@ impl ArrowReaderBuilder {
         self
     }
 
+    /// Attach counters owned by the caller. Upstream [`ScanMetrics`] reads the
+    /// same counters, so bytes are recorded once.
+    pub fn with_scan_counters(mut self, counters: Option<Arc<ScanCounters>>) -> Self {
+        self.scan_counters = counters;
+        self
+    }
+
+    /// Bypass parsed immutable footer caches for measurement controls.
+    pub fn with_cache_bypass(mut self, cache_bypass: bool) -> Self {
+        self.cache_bypass = cache_bypass;
+        self
+    }
+
     /// Build the ArrowReader.
     pub fn build(self) -> ArrowReader {
         ArrowReader {
@@ -138,6 +158,8 @@ impl ArrowReaderBuilder {
             row_group_filtering_enabled: self.row_group_filtering_enabled,
             row_selection_enabled: self.row_selection_enabled,
             parquet_read_options: self.parquet_read_options,
+            scan_counters: self.scan_counters,
+            cache_bypass: self.cache_bypass,
         }
     }
 }
@@ -155,4 +177,6 @@ pub struct ArrowReader {
     row_group_filtering_enabled: bool,
     row_selection_enabled: bool,
     parquet_read_options: ParquetReadOptions,
+    scan_counters: Option<Arc<ScanCounters>>,
+    cache_bypass: bool,
 }

@@ -21,6 +21,7 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
 use crate::compression::CompressionCodec;
+use crate::io::read_observability::{ObjectStoreReadPhase, record_object_store_reads};
 use crate::io::{FileRead, InputFile};
 use crate::{Error, ErrorKind, Result};
 
@@ -200,7 +201,11 @@ impl FileMetadata {
     ) -> Result<u32> {
         let start = input_file_length - FileMetadata::FOOTER_STRUCT_LENGTH as u64;
         let end = start + FileMetadata::FOOTER_STRUCT_PAYLOAD_LENGTH_LENGTH as u64;
-        let footer_payload_length_bytes = file_read.read(start..end).await?;
+        let outcome = file_read.read_with_outcome(start..end).await?;
+        if outcome.fetched {
+            record_object_store_reads(ObjectStoreReadPhase::Footer, 1, outcome.bytes.len() as u64);
+        }
+        let footer_payload_length_bytes = outcome.bytes;
         let mut buf = [0; 4];
         buf.copy_from_slice(&footer_payload_length_bytes);
         let footer_payload_length = u32::from_le_bytes(buf);
@@ -217,7 +222,11 @@ impl FileMetadata {
             + FileMetadata::MAGIC_LENGTH as u64;
         let start = input_file_length - footer_length;
         let end = input_file_length;
-        file_read.read(start..end).await
+        let outcome = file_read.read_with_outcome(start..end).await?;
+        if outcome.fetched {
+            record_object_store_reads(ObjectStoreReadPhase::Footer, 1, outcome.bytes.len() as u64);
+        }
+        Ok(outcome.bytes)
     }
 
     fn decode_flags(footer_bytes: &[u8]) -> Result<HashSet<Flag>> {
@@ -280,7 +289,13 @@ impl FileMetadata {
     pub(crate) async fn read(input_file: &InputFile) -> Result<FileMetadata> {
         let file_read = input_file.reader().await?;
 
-        let first_four_bytes = file_read.read(0..FileMetadata::MAGIC_LENGTH.into()).await?;
+        let outcome = file_read
+            .read_with_outcome(0..FileMetadata::MAGIC_LENGTH.into())
+            .await?;
+        if outcome.fetched {
+            record_object_store_reads(ObjectStoreReadPhase::Footer, 1, outcome.bytes.len() as u64);
+        }
+        let first_four_bytes = outcome.bytes;
         FileMetadata::check_magic(&first_four_bytes)?;
 
         let input_file_length = input_file.metadata().await?.size;

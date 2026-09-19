@@ -21,7 +21,7 @@
 //! of transformed Arrow `RecordBatch`es.
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 
 use futures::{StreamExt, TryStreamExt};
 use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
@@ -34,7 +34,7 @@ use super::{
 use crate::arrow::caching_delete_file_loader::CachingDeleteFileLoader;
 use crate::arrow::int96::coerce_int96_timestamps;
 use crate::arrow::record_batch_transformer::RecordBatchTransformerBuilder;
-use crate::arrow::scan_metrics::{CountingFileRead, ScanMetrics, ScanResult};
+use crate::arrow::scan_metrics::{ScanCounters, ScanMetrics, ScanResult};
 use crate::error::Result;
 use crate::io::{FileIO, FileMetadata, FileRead};
 use crate::metadata_columns::{RESERVED_FIELD_ID_FILE, is_metadata_field};
@@ -47,7 +47,10 @@ impl ArrowReader {
     /// Returns a [`ScanResult`] containing the record batch stream and scan metrics.
     pub fn read(self, tasks: FileScanTaskStream) -> Result<ScanResult> {
         let concurrency_limit_data_files = self.concurrency_limit_data_files;
-        let scan_metrics = ScanMetrics::new();
+        let scan_metrics = ScanMetrics::new(
+            self.scan_counters
+                .unwrap_or_else(|| Arc::new(ScanCounters::default())),
+        );
 
         let task_reader = FileScanTaskReader {
             batch_size: self.batch_size,
@@ -59,6 +62,7 @@ impl ArrowReader {
             row_selection_enabled: self.row_selection_enabled,
             parquet_read_options: self.parquet_read_options,
             scan_metrics: scan_metrics.clone(),
+            cache_bypass: self.cache_bypass,
         };
 
         // Fast-path for single concurrency to avoid overhead of try_flatten_unordered
@@ -100,6 +104,7 @@ struct FileScanTaskReader {
     row_selection_enabled: bool,
     parquet_read_options: ParquetReadOptions,
     scan_metrics: ScanMetrics,
+    cache_bypass: bool,
 }
 
 impl FileScanTaskReader {
@@ -119,9 +124,14 @@ impl FileScanTaskReader {
             &self.file_io,
             task.file_size_in_bytes,
             parquet_read_options,
-            self.scan_metrics.bytes_read_counter(),
+            self.scan_metrics.clone(),
+            self.cache_bypass,
         )
         .await?;
+        self.scan_metrics
+            .counters()
+            .files_read
+            .fetch_add(1, Ordering::Relaxed);
 
         // Check if Parquet file has embedded field IDs
         // Corresponds to Java's ParquetSchemaUtil.hasIds()
@@ -305,6 +315,10 @@ impl FileScanTaskReader {
             )?;
             selected_row_group_indices = Some(byte_range_filtered_row_groups);
         }
+        let row_groups_in_scope = selected_row_group_indices.as_ref().map_or(
+            record_batch_stream_builder.metadata().num_row_groups(),
+            Vec::len,
+        );
 
         if let Some(predicate) = final_predicate {
             let (iceberg_field_ids, field_id_map) = ArrowReader::build_field_id_set_and_map(
@@ -379,6 +393,45 @@ impl FileScanTaskReader {
             };
         }
 
+        let row_group_count = record_batch_stream_builder.metadata().num_row_groups();
+        let row_groups_read = selected_row_group_indices
+            .as_ref()
+            .map_or(row_group_count, Vec::len);
+        let counters = self.scan_metrics.counters();
+        counters
+            .row_groups_considered
+            .fetch_add(row_groups_in_scope as u64, Ordering::Relaxed);
+        counters.row_groups_pruned_stats.fetch_add(
+            row_groups_in_scope.saturating_sub(row_groups_read) as u64,
+            Ordering::Relaxed,
+        );
+        counters
+            .row_groups_read
+            .fetch_add(row_groups_read as u64, Ordering::Relaxed);
+        if let Some(selection) = row_selection.as_ref() {
+            let rows_in_read_groups: u64 = match selected_row_group_indices.as_ref() {
+                Some(indices) => indices
+                    .iter()
+                    .map(|&index| {
+                        record_batch_stream_builder
+                            .metadata()
+                            .row_group(index)
+                            .num_rows() as u64
+                    })
+                    .sum(),
+                None => record_batch_stream_builder
+                    .metadata()
+                    .row_groups()
+                    .iter()
+                    .map(|group| group.num_rows() as u64)
+                    .sum(),
+            };
+            counters.rows_pruned_selection.fetch_add(
+                rows_in_read_groups.saturating_sub(selection.row_count() as u64),
+                Ordering::Relaxed,
+            );
+        }
+
         if let Some(row_selection) = row_selection {
             record_batch_stream_builder =
                 record_batch_stream_builder.with_row_selection(row_selection);
@@ -407,22 +460,24 @@ impl FileScanTaskReader {
 }
 
 impl ArrowReader {
-    /// Opens a Parquet file and loads its metadata, wrapping the reader with
-    /// [`CountingFileRead`] so all I/O is accumulated into `bytes_read`.
+    /// Opens a Parquet file and loads its metadata with physical I/O attribution.
     pub(crate) async fn open_parquet_file(
         data_file_path: &str,
         file_io: &FileIO,
         file_size_in_bytes: u64,
         parquet_read_options: ParquetReadOptions,
-        bytes_read: &Arc<AtomicU64>,
+        scan_metrics: ScanMetrics,
+        cache_bypass: bool,
     ) -> Result<(ArrowFileReader, ArrowReaderMetadata)> {
         let parquet_file = file_io.new_input(data_file_path)?;
-        let counting_reader =
-            CountingFileRead::new(parquet_file.reader().await?, Arc::clone(bytes_read));
+        let parquet_reader = parquet_file.reader().await?;
         Self::build_parquet_reader(
-            Box::new(counting_reader),
+            parquet_reader,
             file_size_in_bytes,
             parquet_read_options,
+            scan_metrics,
+            data_file_path,
+            cache_bypass,
         )
         .await
     }
@@ -431,6 +486,9 @@ impl ArrowReader {
         parquet_reader: Box<dyn FileRead>,
         file_size_in_bytes: u64,
         parquet_read_options: ParquetReadOptions,
+        scan_metrics: ScanMetrics,
+        data_file_path: &str,
+        cache_bypass: bool,
     ) -> Result<(ArrowFileReader, ArrowReaderMetadata)> {
         let mut reader = ArrowFileReader::new(
             FileMetadata {
@@ -438,13 +496,37 @@ impl ArrowReader {
             },
             parquet_reader,
         )
-        .with_parquet_read_options(parquet_read_options);
+        .with_parquet_read_options(parquet_read_options)
+        .with_scan_metrics(scan_metrics);
+
+        if !cache_bypass
+            && let Some(metadata) =
+                super::file_reader::footer_cache_get(data_file_path, parquet_read_options)
+        {
+            let arrow_metadata = ArrowReaderMetadata::try_new(metadata, Default::default())
+                .map_err(|error| {
+                    Error::new(
+                        ErrorKind::Unexpected,
+                        "Failed to create ArrowReaderMetadata from cached metadata",
+                    )
+                    .with_source(error)
+                })?;
+            return Ok((reader, arrow_metadata));
+        }
 
         let arrow_metadata = ArrowReaderMetadata::load_async(&mut reader, Default::default())
             .await
             .map_err(|e| {
                 Error::new(ErrorKind::Unexpected, "Failed to load Parquet metadata").with_source(e)
             })?;
+
+        if !cache_bypass {
+            super::file_reader::footer_cache_put(
+                data_file_path,
+                parquet_read_options,
+                Arc::clone(arrow_metadata.metadata()),
+            );
+        }
 
         Ok((reader, arrow_metadata))
     }
@@ -496,8 +578,19 @@ mod tests {
         schema: SchemaRef,
         project_field_ids: Vec<i32>,
     ) -> Vec<RecordBatch> {
+        read_int96_batches_with_bypass(file_path, schema, project_field_ids, false).await
+    }
+
+    async fn read_int96_batches_with_bypass(
+        file_path: &str,
+        schema: SchemaRef,
+        project_field_ids: Vec<i32>,
+        cache_bypass: bool,
+    ) -> Vec<RecordBatch> {
         let file_io = FileIO::new_with_fs();
-        let reader = ArrowReaderBuilder::new(file_io, Runtime::current()).build();
+        let reader = ArrowReaderBuilder::new(file_io, Runtime::current())
+            .with_cache_bypass(cache_bypass)
+            .build();
 
         let file_size = std::fs::metadata(file_path).unwrap().len();
         let task = FileScanTask::builder()
@@ -519,6 +612,41 @@ mod tests {
             .try_collect()
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn cold_warm_and_bypassed_reads_return_identical_rows() {
+        let tmp_dir = TempDir::new().unwrap();
+        let table_location = tmp_dir.path().to_str().unwrap();
+        let (file_path, expected) = write_int96_parquet_file(table_location, "cache.parquet", true);
+        let schema = Arc::new(
+            Schema::builder()
+                .with_schema_id(1)
+                .with_fields(vec![
+                    NestedField::required(1, "ts", Type::Primitive(PrimitiveType::Timestamp))
+                        .into(),
+                    NestedField::required(2, "id", Type::Primitive(PrimitiveType::Int)).into(),
+                ])
+                .build()
+                .unwrap(),
+        );
+        let read =
+            |bypass| read_int96_batches_with_bypass(&file_path, schema.clone(), vec![1, 2], bypass);
+        let cold = read(false).await;
+        let warm = read(false).await;
+        let bypassed = read(true).await;
+        let timestamps = |batches: &[RecordBatch]| {
+            batches[0]
+                .column(0)
+                .as_any()
+                .downcast_ref::<arrow_array::TimestampMicrosecondArray>()
+                .unwrap()
+                .values()
+                .to_vec()
+        };
+        assert_eq!(timestamps(&cold), expected);
+        assert_eq!(timestamps(&warm), expected);
+        assert_eq!(timestamps(&bypassed), expected);
     }
 
     // ArrowWriter cannot write INT96, so we use SerializedFileWriter directly.

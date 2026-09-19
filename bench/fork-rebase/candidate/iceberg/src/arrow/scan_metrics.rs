@@ -17,58 +17,89 @@
 
 //! Scan metrics and I/O counting for Parquet data file reads.
 
-use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use bytes::Bytes;
-
-use crate::error::Result;
-use crate::io::FileRead;
+use crate::io::read_observability::ObjectStoreReadPhase;
 use crate::scan::ArrowRecordBatchStream;
 
-/// Wraps a [`FileRead`] to count bytes read via a shared atomic counter.
-pub(crate) struct CountingFileRead<F: FileRead> {
-    inner: F,
-    bytes_read: Arc<AtomicU64>,
+/// Detailed per-scan pruning and physical I/O attribution.
+#[derive(Debug, Default)]
+pub struct ScanCounters {
+    /// File tasks whose Parquet footer was opened.
+    pub files_read: AtomicU64,
+    /// Whole files skipped by a bloom before data reads.
+    pub files_pruned_bloom: AtomicU64,
+    /// Row groups in the task's byte-range scope.
+    pub row_groups_considered: AtomicU64,
+    /// Row groups removed by application bloom indexes.
+    pub row_groups_pruned_bloom: AtomicU64,
+    /// Row groups removed by predicate statistics.
+    pub row_groups_pruned_stats: AtomicU64,
+    /// Row groups handed to the Parquet reader.
+    pub row_groups_read: AtomicU64,
+    /// Rows skipped before decode by a row selection.
+    pub rows_pruned_selection: AtomicU64,
+    /// Physical object-store range reads, including delete files.
+    pub object_store_reads: AtomicU64,
+    /// Physical Parquet and Puffin footer bytes.
+    pub bytes_footer: AtomicU64,
+    /// Physical page, offset, column, and application index bytes.
+    pub bytes_index: AtomicU64,
+    /// Physical Parquet column data bytes.
+    pub bytes_data: AtomicU64,
+    /// Physical bytes without a more specific class.
+    pub bytes_other: AtomicU64,
 }
 
-impl<F: FileRead> CountingFileRead<F> {
-    pub(crate) fn new(inner: F, bytes_read: Arc<AtomicU64>) -> Self {
-        Self { inner, bytes_read }
+impl ScanCounters {
+    pub(crate) fn add_phase_bytes(&self, phase: ObjectStoreReadPhase, bytes: u64) {
+        let counter = match phase {
+            ObjectStoreReadPhase::Footer => &self.bytes_footer,
+            ObjectStoreReadPhase::Index => &self.bytes_index,
+            ObjectStoreReadPhase::Data => &self.bytes_data,
+            ObjectStoreReadPhase::Manifest | ObjectStoreReadPhase::Other => &self.bytes_other,
+        };
+        counter.fetch_add(bytes, Ordering::Relaxed);
     }
-}
 
-#[async_trait::async_trait]
-impl<F: FileRead> FileRead for CountingFileRead<F> {
-    async fn read(&self, range: Range<u64>) -> Result<Bytes> {
-        debug_assert!(range.end >= range.start);
-        self.bytes_read
-            .fetch_add(range.end - range.start, Ordering::Relaxed);
-        self.inner.read(range).await
+    fn bytes_read(&self) -> u64 {
+        self.bytes_footer.load(Ordering::Relaxed)
+            + self.bytes_index.load(Ordering::Relaxed)
+            + self.bytes_data.load(Ordering::Relaxed)
+            + self.bytes_other.load(Ordering::Relaxed)
     }
 }
 
 /// Metrics collected during an Iceberg scan.
 #[derive(Clone, Debug)]
 pub struct ScanMetrics {
-    bytes_read: Arc<AtomicU64>,
+    counters: Arc<ScanCounters>,
 }
 
 impl ScanMetrics {
-    pub(crate) fn new() -> Self {
-        Self {
-            bytes_read: Arc::new(AtomicU64::new(0)),
-        }
+    pub(crate) fn new(counters: Arc<ScanCounters>) -> Self {
+        Self { counters }
     }
 
-    pub(crate) fn bytes_read_counter(&self) -> &Arc<AtomicU64> {
-        &self.bytes_read
+    pub(crate) fn counters(&self) -> &Arc<ScanCounters> {
+        &self.counters
     }
 
     /// Total bytes read from storage during this scan, including data files and delete files.
     pub fn bytes_read(&self) -> u64 {
-        self.bytes_read.load(Ordering::Relaxed)
+        self.counters.bytes_read()
+    }
+
+    /// Detailed counters shared by data and delete-file reads.
+    pub fn scan_counters(&self) -> &ScanCounters {
+        &self.counters
+    }
+}
+
+impl Default for ScanMetrics {
+    fn default() -> Self {
+        Self::new(Arc::new(ScanCounters::default()))
     }
 }
 

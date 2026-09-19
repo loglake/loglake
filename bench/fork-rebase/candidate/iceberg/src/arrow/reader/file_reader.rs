@@ -17,24 +17,104 @@
 
 //! Async Parquet file reader that adapts an Iceberg `FileRead` to parquet's `AsyncFileReader`.
 
+use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
 use std::sync::Arc;
+use std::sync::{Mutex, OnceLock};
 
 use bytes::Bytes;
 use futures::future::BoxFuture;
-use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
+use futures::{FutureExt, StreamExt, TryStreamExt};
 use parquet::arrow::arrow_reader::ArrowReaderOptions;
 use parquet::arrow::async_reader::AsyncFileReader;
-use parquet::file::metadata::{PageIndexPolicy, ParquetMetaData, ParquetMetaDataReader};
+use parquet::encryption::decrypt::FileDecryptionProperties;
+use parquet::file::metadata::{
+    PageIndexPolicy, ParquetMetaData, ParquetMetaDataOptions, ParquetMetaDataReader,
+};
 
 use super::ParquetReadOptions;
+use crate::arrow::ScanMetrics;
+use crate::io::read_observability::{ObjectStoreReadPhase, record_object_store_reads};
 use crate::io::{FileMetadata, FileRead};
+
+struct FooterCache {
+    order: VecDeque<String>,
+    entries: HashMap<String, Arc<ParquetMetaData>>,
+}
+
+fn footer_cache() -> &'static Mutex<FooterCache> {
+    static CACHE: OnceLock<Mutex<FooterCache>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        Mutex::new(FooterCache {
+            order: VecDeque::new(),
+            entries: HashMap::new(),
+        })
+    })
+}
+
+fn footer_cache_max_entries() -> usize {
+    std::env::var("LOGLAKE_ICEBERG_FOOTER_CACHE_MAX_ENTRIES")
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(512)
+}
+
+fn footer_cache_key(path: &str, options: ParquetReadOptions) -> String {
+    format!(
+        "{path}|column={}|offset={}|page={}",
+        options.preload_column_index(),
+        options.preload_offset_index(),
+        options.preload_page_index()
+    )
+}
+
+pub(crate) fn footer_cache_get(
+    path: &str,
+    options: ParquetReadOptions,
+) -> Option<Arc<ParquetMetaData>> {
+    if footer_cache_max_entries() == 0 {
+        return None;
+    }
+    let key = footer_cache_key(path, options);
+    let hit = footer_cache().lock().unwrap().entries.get(&key).cloned();
+    metrics::counter!(
+        "loglake_iceberg_footer_cache_total",
+        "outcome" => if hit.is_some() { "hit" } else { "miss" }
+    )
+    .increment(1);
+    hit
+}
+
+pub(crate) fn footer_cache_put(
+    path: &str,
+    options: ParquetReadOptions,
+    metadata: Arc<ParquetMetaData>,
+) {
+    let max_entries = footer_cache_max_entries();
+    if max_entries == 0 {
+        return;
+    }
+    let key = footer_cache_key(path, options);
+    let mut cache = footer_cache().lock().unwrap();
+    if cache.entries.contains_key(&key) {
+        return;
+    }
+    cache.entries.insert(key.clone(), metadata);
+    cache.order.push_back(key);
+    while cache.order.len() > max_entries {
+        if let Some(evicted) = cache.order.pop_front() {
+            cache.entries.remove(&evicted);
+        }
+    }
+}
 
 /// ArrowFileReader is a wrapper around a FileRead that impls parquets AsyncFileReader.
 pub struct ArrowFileReader {
     meta: FileMetadata,
     parquet_read_options: ParquetReadOptions,
     r: Box<dyn FileRead>,
+    scan_metrics: ScanMetrics,
+    current_phase: ObjectStoreReadPhase,
 }
 
 impl ArrowFileReader {
@@ -44,6 +124,8 @@ impl ArrowFileReader {
             meta,
             parquet_read_options: ParquetReadOptions::builder().build(),
             r,
+            scan_metrics: ScanMetrics::default(),
+            current_phase: ObjectStoreReadPhase::Data,
         }
     }
 
@@ -52,15 +134,76 @@ impl ArrowFileReader {
         self.parquet_read_options = options;
         self
     }
+
+    pub(crate) fn with_scan_metrics(mut self, scan_metrics: ScanMetrics) -> Self {
+        self.scan_metrics = scan_metrics;
+        self
+    }
+
+    fn record_read(&self, phase: ObjectStoreReadPhase, bytes: u64) {
+        let counters = self.scan_metrics.counters();
+        counters
+            .object_store_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        counters.add_phase_bytes(phase, bytes);
+        record_object_store_reads(phase, 1, bytes);
+    }
+
+    async fn load_parquet_metadata(
+        &mut self,
+        decryption_properties: Option<Arc<FileDecryptionProperties>>,
+        metadata_options: Option<ParquetMetaDataOptions>,
+    ) -> parquet::errors::Result<Arc<ParquetMetaData>> {
+        let mut reader = ParquetMetaDataReader::new()
+            .with_prefetch_hint(self.parquet_read_options.metadata_size_hint())
+            .with_page_index_policy(PageIndexPolicy::Skip)
+            .with_column_index_policy(PageIndexPolicy::Skip)
+            .with_offset_index_policy(PageIndexPolicy::Skip)
+            .with_metadata_options(metadata_options)
+            .with_decryption_properties(decryption_properties);
+
+        self.current_phase = ObjectStoreReadPhase::Footer;
+        let file_size = self.meta.size;
+        reader.try_load(&mut *self, file_size).await?;
+
+        if self.parquet_read_options.preload_page_index()
+            || self.parquet_read_options.preload_column_index()
+            || self.parquet_read_options.preload_offset_index()
+        {
+            self.current_phase = ObjectStoreReadPhase::Index;
+            reader = reader
+                .with_page_index_policy(PageIndexPolicy::from(
+                    self.parquet_read_options.preload_page_index(),
+                ))
+                .with_column_index_policy(PageIndexPolicy::from(
+                    self.parquet_read_options.preload_column_index(),
+                ))
+                .with_offset_index_policy(PageIndexPolicy::from(
+                    self.parquet_read_options.preload_offset_index(),
+                ));
+            reader.load_page_index(&mut *self).await?;
+        }
+
+        self.current_phase = ObjectStoreReadPhase::Data;
+        reader.finish().map(Arc::new)
+    }
 }
 
 impl AsyncFileReader for ArrowFileReader {
     fn get_bytes(&mut self, range: Range<u64>) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
-        Box::pin(
-            self.r
-                .read(range.start..range.end)
-                .map_err(|err| parquet::errors::ParquetError::External(Box::new(err))),
-        )
+        let phase = self.current_phase;
+        async move {
+            let outcome = self
+                .r
+                .read_with_outcome(range.start..range.end)
+                .await
+                .map_err(|error| parquet::errors::ParquetError::External(Box::new(error)))?;
+            if outcome.fetched {
+                self.record_read(phase, outcome.bytes.len() as u64);
+            }
+            Ok(outcome.bytes)
+        }
+        .boxed()
     }
 
     /// Override the default `get_byte_ranges` which calls `get_bytes` sequentially.
@@ -78,13 +221,27 @@ impl AsyncFileReader for ArrowFileReader {
             // Merge nearby ranges to reduce the number of object store requests.
             let fetch_ranges = merge_ranges(&ranges, coalesce_bytes);
             let r = &self.r;
+            let scan_metrics = self.scan_metrics.clone();
+            let phase = self.current_phase;
 
             // Fetch merged ranges concurrently.
             let fetched: Vec<Bytes> = futures::stream::iter(fetch_ranges.iter().cloned())
-                .map(|range| async move {
-                    r.read(range)
-                        .await
-                        .map_err(|e| parquet::errors::ParquetError::External(Box::new(e)))
+                .map(|range| {
+                    let scan_metrics = scan_metrics.clone();
+                    async move {
+                        let outcome = r.read_with_outcome(range).await.map_err(|error| {
+                            parquet::errors::ParquetError::External(Box::new(error))
+                        })?;
+                        if outcome.fetched {
+                            let counters = scan_metrics.counters();
+                            counters
+                                .object_store_reads
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            counters.add_phase_bytes(phase, outcome.bytes.len() as u64);
+                            record_object_store_reads(phase, 1, outcome.bytes.len() as u64);
+                        }
+                        Ok::<_, parquet::errors::ParquetError>(outcome.bytes)
+                    }
                 })
                 .buffered(concurrency)
                 .try_collect()
@@ -111,30 +268,12 @@ impl AsyncFileReader for ArrowFileReader {
         options: Option<&'_ ArrowReaderOptions>,
     ) -> BoxFuture<'_, parquet::errors::Result<Arc<ParquetMetaData>>> {
         let decryption_properties = options
-            .and_then(|opts| opts.file_decryption_properties())
+            .and_then(|options| options.file_decryption_properties())
             .cloned();
-
-        let metadata_options = options.map(|opts| opts.metadata_options().clone());
-
+        let metadata_options = options.map(|options| options.metadata_options().clone());
         async move {
-            let reader = ParquetMetaDataReader::new()
-                .with_prefetch_hint(self.parquet_read_options.metadata_size_hint())
-                // Set the page policy first because it updates both column and offset policies.
-                .with_page_index_policy(PageIndexPolicy::from(
-                    self.parquet_read_options.preload_page_index(),
-                ))
-                .with_column_index_policy(PageIndexPolicy::from(
-                    self.parquet_read_options.preload_column_index(),
-                ))
-                .with_offset_index_policy(PageIndexPolicy::from(
-                    self.parquet_read_options.preload_offset_index(),
-                ))
-                .with_metadata_options(metadata_options)
-                .with_decryption_properties(decryption_properties);
-            let size = self.meta.size;
-            let meta = reader.load_and_finish(self, size).await?;
-
-            Ok(Arc::new(meta))
+            self.load_parquet_metadata(decryption_properties, metadata_options)
+                .await
         }
         .boxed()
     }
@@ -183,6 +322,7 @@ mod tests {
     use parquet::arrow::async_reader::AsyncFileReader;
 
     use super::{ArrowFileReader, ParquetReadOptions, merge_ranges};
+    use crate::arrow::ScanMetrics;
     use crate::io::{FileMetadata, FileRead};
 
     #[test]
@@ -263,6 +403,42 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result[0], expected_0);
         assert_eq!(result[1], expected_1);
+    }
+
+    #[tokio::test]
+    async fn coalesced_data_ranges_are_attributed_once_per_physical_fetch() {
+        let metrics = ScanMetrics::default();
+        let mut reader = ArrowFileReader::new(
+            FileMetadata { size: 2_048 },
+            Box::new(MockFileRead::new(2_048)),
+        )
+        .with_scan_metrics(metrics.clone())
+        .with_parquet_read_options(
+            ParquetReadOptions::builder()
+                .with_range_coalesce_bytes(1_024)
+                .build(),
+        );
+
+        let result = reader
+            .get_byte_ranges(vec![0..100, 200..300])
+            .await
+            .unwrap();
+        assert_eq!(result[0].len(), 100);
+        assert_eq!(result[1].len(), 100);
+        let counters = metrics.scan_counters();
+        assert_eq!(
+            counters
+                .object_store_reads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            counters
+                .bytes_data
+                .load(std::sync::atomic::Ordering::Relaxed),
+            300
+        );
+        assert_eq!(metrics.bytes_read(), 300);
     }
 
     #[tokio::test]
