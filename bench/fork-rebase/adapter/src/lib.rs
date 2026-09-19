@@ -1,10 +1,13 @@
 //! Caller adapters for the two 0.9 fork actions replaced by upstream 0.10.1.
 
+pub mod aws_credential;
+
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
+use iceberg::io::{LocalFsStorageFactory, StorageFactory};
 use iceberg::spec::{TableMetadata, Type};
 use iceberg::table::Table;
 use iceberg::transaction::{AddColumn, ApplyTransactionAction, Transaction};
@@ -12,6 +15,30 @@ use iceberg::{
     Catalog, Error, ErrorKind, Namespace, NamespaceIdent, Result, TableCommit, TableCreation,
     TableIdent,
 };
+use iceberg_storage_opendal::{CustomAwsCredentialLoader, OpenDalStorageFactory};
+
+/// Build the candidate storage factory without changing production selection.
+pub fn storage_factory_for(
+    warehouse_url: &str,
+) -> anyhow::Result<std::sync::Arc<dyn StorageFactory>> {
+    let scheme = warehouse_url
+        .split("://")
+        .next()
+        .filter(|scheme| !scheme.is_empty() && *scheme != warehouse_url)
+        .ok_or_else(|| anyhow::anyhow!("warehouse URL must include a scheme: {warehouse_url}"))?;
+    Ok(match scheme {
+        "file" => std::sync::Arc::new(LocalFsStorageFactory),
+        "s3" | "s3a" => std::sync::Arc::new(OpenDalStorageFactory::S3 {
+            customized_credential_load: Some(CustomAwsCredentialLoader::new(
+                aws_credential::LoglakeAwsLoader::new(),
+            )),
+        }),
+        "memory" => std::sync::Arc::new(OpenDalStorageFactory::Memory),
+        other => anyhow::bail!(
+            "unsupported warehouse scheme `{other}`; supported: file, s3, s3a, memory"
+        ),
+    })
+}
 
 /// An expiry policy expressed in LogLake's caller terms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -291,12 +318,44 @@ impl Catalog for PreviewCatalog {
 
 #[cfg(test)]
 mod tests {
-    use iceberg::io::FileIO;
+    use iceberg::io::{FileIO, FileIOBuilder, S3_REGION};
     use iceberg::spec::{PrimitiveType, TableMetadata, Type};
     use iceberg::table::Table;
     use iceberg::{NamespaceIdent, Runtime, TableIdent};
 
     use super::*;
+
+    #[test]
+    fn candidate_factories_accept_configured_paths_without_io() {
+        for (warehouse, path) in [
+            (
+                "s3://bucket/warehouse",
+                "s3://bucket/warehouse/file.parquet",
+            ),
+            (
+                "s3a://bucket/warehouse",
+                "s3a://bucket/warehouse/file.parquet",
+            ),
+        ] {
+            let io = FileIOBuilder::new(storage_factory_for(warehouse).unwrap())
+                .with_prop(S3_REGION, "us-east-1")
+                .build();
+            io.new_input(path).expect("construct S3 input path");
+            io.new_output(path).expect("construct S3 output path");
+        }
+
+        let memory = FileIOBuilder::new(storage_factory_for("memory://warehouse").unwrap()).build();
+        memory
+            .new_input("memory:/warehouse/file.parquet")
+            .expect("construct memory input path");
+        let local = FileIOBuilder::new(storage_factory_for("file:///warehouse").unwrap()).build();
+        local
+            .new_input("file:///warehouse/file.parquet")
+            .expect("construct local input path");
+
+        assert!(storage_factory_for("warehouse-without-scheme").is_err());
+        assert!(storage_factory_for("gs://bucket/warehouse").is_err());
+    }
 
     fn table_from_json(json: &str) -> Table {
         let mut value: serde_json::Value = serde_json::from_str(json).unwrap();

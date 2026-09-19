@@ -1,6 +1,7 @@
 pub mod iceberg_storage_opendal
 pub use iceberg_storage_opendal::AwsCredential
 pub use iceberg_storage_opendal::ProvideCredential
+pub fn iceberg_storage_opendal::available_upload_permits(class: iceberg_storage_opendal::UploadClass) -> usize
 pub enum iceberg_storage_opendal::OpenDalStorage
 pub iceberg_storage_opendal::OpenDalStorage::Azdls
 pub iceberg_storage_opendal::OpenDalStorage::Azdls::config: alloc::sync::Arc<opendal_service_azdls::config::AzdlsConfig>
@@ -96,3 +97,17 @@ impl serde_core::ser::Serialize for iceberg_storage_opendal::OpenDalResolvingSto
 pub fn iceberg_storage_opendal::OpenDalResolvingStorageFactory::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for iceberg_storage_opendal::OpenDalResolvingStorageFactory
 pub fn iceberg_storage_opendal::OpenDalResolvingStorageFactory::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum iceberg_storage_opendal::UploadClass
+pub iceberg_storage_opendal::UploadClass::Compaction
+pub iceberg_storage_opendal::UploadClass::Drain
+impl core::clone::Clone for iceberg_storage_opendal::UploadClass
+pub fn iceberg_storage_opendal::UploadClass::clone(&self) -> iceberg_storage_opendal::UploadClass
+impl core::cmp::Eq for iceberg_storage_opendal::UploadClass
+impl core::cmp::PartialEq for iceberg_storage_opendal::UploadClass
+pub fn iceberg_storage_opendal::UploadClass::eq(&self, other: &iceberg_storage_opendal::UploadClass) -> bool
+impl core::default::Default for iceberg_storage_opendal::UploadClass
+pub fn iceberg_storage_opendal::UploadClass::default() -> iceberg_storage_opendal::UploadClass
+impl core::fmt::Debug for iceberg_storage_opendal::UploadClass
+pub fn iceberg_storage_opendal::UploadClass::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for iceberg_storage_opendal::UploadClass
+pub async fn iceberg_storage_opendal::with_upload_class<F: core::future::future::Future>(class: iceberg_storage_opendal::UploadClass, future: F) -> <F as core::future::future::Future>::Output
