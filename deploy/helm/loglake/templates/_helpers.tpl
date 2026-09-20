@@ -315,6 +315,39 @@ OIDC takes precedence over, as the remedy.
 {{- end -}}
 {{- end -}}
 
+{{/*
+loglake.ingestTokensSecret - the Secret name the ingester pods read
+LOGLAKE_AUTH_TOKENS from, or "" when no static token allow-list reaches them.
+
+`ingester.auth.existingSecret` names a Secret the operator already has;
+`ingester.auth.list` makes the chart write one (secret-auth-tokens.yaml). Keep
+the Deployment, chart-owned Secret and authentication note on this resolution
+so a new token source cannot secure the pods while the note still calls them
+open.
+*/}}
+{{- define "loglake.ingestTokensSecret" -}}
+{{- if .Values.ingester.auth.existingSecret -}}
+{{- .Values.ingester.auth.existingSecret -}}
+{{- else if .Values.ingester.auth.list -}}
+{{- include "loglake.componentName" (list . "auth-tokens") -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+loglake.ingestAuthOn - "1" when the ingest tier authenticates its callers, ""
+when the OTLP and Elasticsearch-compatible write APIs answer whoever can reach
+them. Either a static token allow-list or a complete `ingester.oidc` block is
+authentication; the binary selects OIDC ahead of the static token list.
+*/}}
+{{- define "loglake.ingestAuthOn" -}}
+{{- $oidc := default dict .Values.ingester.oidc -}}
+{{- $issuer := trim (toString (default "" $oidc.issuer)) -}}
+{{- $audience := trim (toString (default "" $oidc.audience)) -}}
+{{- if or (include "loglake.ingestTokensSecret" .) (include "loglake.oidcOn" (list $issuer $audience)) -}}
+1
+{{- end -}}
+{{- end -}}
+
 {{- define "loglake.labels" -}}
 helm.sh/chart: {{ include "loglake.chart" . }}
 {{ include "loglake.selectorLabels" . }}
