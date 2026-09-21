@@ -482,6 +482,7 @@ expected = {
         ("loglake_wal_mirror_register_abandoned_total", {}),
         ("loglake_wal_mirror_upload_abandoned_total", {}),
         ("loglake_wal_crc_mismatch_total", {}),
+        ("loglake_wal_ipc_framing_refused_total", {}),
         ("loglake_wal_partials_adopted_total", {}),
     ],
     "compactor": [
@@ -500,6 +501,7 @@ expected = {
             {"iceberg_namespace": "loglake", "table": "events"},
         ),
         ("loglake_wal_crc_mismatch_total", {}),
+        ("loglake_wal_ipc_framing_refused_total", {}),
     ],
 }
 

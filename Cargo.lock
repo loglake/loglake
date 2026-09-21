@@ -4375,6 +4375,7 @@ dependencies = [
  "futures",
  "loglake-core",
  "metrics",
+ "metrics-util",
  "object_store",
  "opendal",
  "serde",
