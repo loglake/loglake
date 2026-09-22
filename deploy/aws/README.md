@@ -29,7 +29,7 @@ deploy/aws/smoke.sh
 helm install loglake-op deploy/helm/loglake-operator \
   --namespace loglake-system --create-namespace \
   --set image.repository="$(terraform -chdir=deploy/terraform/aws output -raw ecr_repository_url)" \
-  --set image.tag=operator-0.1.1
+  --set image.tag=operator-0.2.0
 deploy/aws/operator-smoke.sh
 
 # 4. Tear it down.
@@ -56,7 +56,7 @@ All three scripts honor the same set of vars:
 |----------------------|------------------------------------------------|-------------------------------------------------------------|
 | `LOGLAKE_RELEASE`     | `loglake`                                       | Helm release name.                                          |
 | `LOGLAKE_NAMESPACE`   | `loglake`                                       | Target namespace.                                           |
-| `LOGLAKE_IMAGE_TAG`   | `0.1.1`                                        | Image tag to deploy.                                        |
+| `LOGLAKE_IMAGE_TAG`   | `0.2.0`                                        | Image tag to deploy.                                        |
 | `LOGLAKE_VALUES_EXTRA`| `deploy/aws/config/values.smoke.yaml`          | Extra values file layered onto Terraform's emitted values.  |
 | `LOGLAKE_QUERY_TOKEN` | _empty_                                        | Bearer token for `smoke.sh` if the chart's `query.tokens` is set. |
 | `LOGLAKE_QUERY_CASES_FILE` | _empty_                                   | TSV input file for `query-bench.sh` (`label<TAB>expected<TAB>sql<TAB>tags`). |

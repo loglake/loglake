@@ -4,7 +4,7 @@ metadata:
   name: example
   namespace: default
 spec:
-  image: ghcr.io/limnion-ai/loglake:0.1.1
+  image: ghcr.io/limnion-ai/loglake:0.2.0
   warehouseUrl: s3://acme-prod/warehouse
   catalogUri: postgres://loglake:secret@postgres.loglake-system:5432/loglake
   autoscaling:

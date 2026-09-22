@@ -4050,7 +4050,7 @@ checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
 name = "loglake-bloom"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "proptest",
@@ -4059,7 +4059,7 @@ dependencies = [
 
 [[package]]
 name = "loglake-cli"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "arrow-array",
@@ -4094,7 +4094,7 @@ dependencies = [
 
 [[package]]
 name = "loglake-compactor"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "arrow",
@@ -4119,7 +4119,7 @@ dependencies = [
 
 [[package]]
 name = "loglake-core"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "arrow",
@@ -4154,7 +4154,7 @@ dependencies = [
 
 [[package]]
 name = "loglake-index"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "crc32fast",
  "loglake-bloom",
@@ -4163,7 +4163,7 @@ dependencies = [
 
 [[package]]
 name = "loglake-ingest"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "arrow-array",
@@ -4203,7 +4203,7 @@ dependencies = [
 
 [[package]]
 name = "loglake-loadgen"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4222,7 +4222,7 @@ dependencies = [
 
 [[package]]
 name = "loglake-openapi"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4235,7 +4235,7 @@ dependencies = [
 
 [[package]]
 name = "loglake-operator"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4264,7 +4264,7 @@ dependencies = [
 
 [[package]]
 name = "loglake-query-server"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "arrow",
@@ -4317,7 +4317,7 @@ dependencies = [
 
 [[package]]
 name = "loglake-storage"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "arrow",
@@ -4363,7 +4363,7 @@ dependencies = [
 
 [[package]]
 name = "loglake-wal"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "arrow",
