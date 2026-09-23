@@ -57,8 +57,8 @@ jobs:
           push: true
           build-args: LOGLAKE_GIT_SHA=${{ env.REVISION }}
           tags: |
-            ghcr.io/limnion-ai/loglake:${{ env.TAG }}
-            ghcr.io/limnion-ai/loglake:latest
+            ghcr.io/loglake/loglake:${{ env.TAG }}
+            ghcr.io/loglake/loglake:latest
           cache-from: type=gha,scope=loglake
           cache-to: type=gha,scope=loglake,mode=max
       - name: Build and push loglake-operator
@@ -69,7 +69,7 @@ jobs:
           push: true
           build-args: LOGLAKE_GIT_SHA=${{ env.REVISION }}
           tags: |
-            ghcr.io/limnion-ai/loglake-operator:${{ env.TAG }}
-            ghcr.io/limnion-ai/loglake-operator:latest
+            ghcr.io/loglake/loglake-operator:${{ env.TAG }}
+            ghcr.io/loglake/loglake-operator:latest
           cache-from: type=gha,scope=loglake-operator
           cache-to: type=gha,scope=loglake-operator,mode=max
