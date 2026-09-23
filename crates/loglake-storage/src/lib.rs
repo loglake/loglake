@@ -27,8 +27,8 @@ pub use query_provider::{
     ClippedAdmissionWave, ClippedScanLimit, DecodedFileCacheFootprint,
     DecodedFileCachePopulationStats, FileAttributionSnapshot, LoglakeIcebergTableScan,
     OrderedMergeGlobalBudget, OrderedResidualHint, OrderedScanLimit, OrderedScanTuning,
-    PreferredScanOrder, QueryCancel, ScanPartitionTracker, ScanSettle, ScanShard,
-    FILE_ATTRIBUTION_CAP,
+    PreferredScanOrder, QueryCancel, QueryExecutionId, ScanPartitionTracker, ScanSettle, ScanShard,
+    FILE_ATTRIBUTION_CAP, UNATTRIBUTED_QUERY_EXECUTION_ID,
 };
 
 /// Arrow field-metadata key carrying the configured text tokenizer name for a
