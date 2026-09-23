@@ -212,3 +212,102 @@ cargo test --workspace
 scripts/check-fork-tests.sh
 scripts/ci-local.sh --strict
 ```
+
+## Slice 8 ledger — performance acceptance (pre-registered)
+
+Recorded 2026-09-23, before spending on the matched control round.
+
+The candidate is LogLake `59ce561` (0.2.0), image
+`loglake:bench-20260923-071516`, digest
+`sha256:283ae38377746fc846e2853d24b6730b33dddbf4a373818d78de41715cada043`,
+using `loglake-benchmarks` revision `590df579b917`. Its artifacts are retained as
+`loglake-benchmarks/results/20260923-aws`.
+
+The control source is `ea3c244`, the first parent of adoption merge `c3033f4`.
+Its image is `loglake:bench-20260919-191232`, digest
+`sha256:c4cf2627d26e433cf0f8a324207f194e7e5abe3041c3fe1bfd70f87a54ed5c91`.
+Its only retained round, `loglake-benchmarks/results/20260919-aws`, used a
+4 GiB query pod and two peers, so it is not configuration-matched evidence.
+Round identity comes from `provenance.json`'s
+`running_build.<role>.commit`, for both the query server and compactor, rather
+than `repo_head`. In particular, `20260919-aws.191217` has `repo_head`
+`ea3c244` but ran `5348199` binaries and is not control evidence.
+
+### Matched contract
+
+Both sides use an `m6i.4xlarge` and corpus `logs-50g`
+(`s3://quickwit-bench-corpora-001520130581/corpora/v1/logs-50g/`), with an
+unlimited query pod (`query_memory_limit_gb` 0), result cache off,
+`peer_count` 0, `index_rebuild` 0, 10 core runs, 8 edge runs and
+`previous_round` `20260916-aws.193232`. That previous round ran `66e2f11`; it
+fixes the comparison input and is not a substitute for the `ea3c244` control.
+The control's verbatim `aws_round` parameter set is:
+
+```yaml
+{skip_build: true, image_tag: "loglake:bench-20260919-191232", query_memory_limit_gb: 0, previous_round: "20260916-aws.193232"}
+```
+
+Each side archives:
+
+- per-shape p50 and p95, with every cold and warm per-run sample;
+- `served_by` for every run;
+- object-store bytes by phase and the index/metadata remainder;
+- files planned and read, and rows pruned by selection;
+- ingest `accept_rows_per_s`, plus drain and commit counters from
+  `compactor-metrics.txt`;
+- cgroup `memory.peak`; and
+- `loglake_query_memory_pool_reserved_bytes` beside
+  `loglake_query_in_flight`.
+
+The registered limits are the standing one-sided 2x bands and absolute
+ceilings in `loglake-benchmarks/docs/predictions/50g-regression.json`. The
+candidate must also equal the control's `served_by` value on all seven route
+rows: `label_filter`, `keyword_and_label`, `label_filter_last25`,
+`count_by_level_last25`, `count_by_level`, `group_by_service` and
+`high_card_group_by_host`. After both suites,
+`loglake_query_memory_pool_reserved_bytes` must be 0 whenever
+`loglake_query_in_flight` is 0. A separate round with `peer_count` at least 1
+must run a cross-shard `GROUP BY` whose counts for each group sum to `record_count`
+98,466,115.
+
+### Historical ceilings and current failures
+
+The 2026-09-02 and 2026-09-03 baselines used LogLake `7c84634` and `4e03864`
+with `loglake-benchmarks` revision `ac47b1f`. Those LogLake SHAs exist on
+`private/main` only. The
+rounds predate `provenance.json` and retain no image digest,
+`ingest-summary.json` or pod size. They supplied the absolute ceilings; they
+are not a comparison arm for this acceptance. The 2.57 ms
+`count_by_status` result is an httplogs measurement outside the logs-50g
+suite. Its logs-50g analogues are the three `tier1_inline` route rows named
+above.
+
+`results/20260923-aws` has four standing-prediction failures:
+
+- `keyword`: 13.68 ms, with 19 files planned versus 23 in its selected
+  previous-round baseline;
+- `label_filter`: 70.35 ms, with 15 files planned versus 16;
+- `label_filter_last25`: 52.05 ms, with six files planned on both sides but no
+  candidate smallest-file measurement; and
+- `multi_label_and`: 1,376 ms, with 15 files planned versus 16.
+
+These failures are not attributable to the adopted stack before the matched
+contract runs. They already have pre-adoption precedents: `multi_label_and`
+was 1,205 ms in `results/20260916-aws.214836`, and `label_filter` was 55–75 ms
+in every retained 2026-09-19 round, including the clean `ea3c244` round. The
+file layouts above also differ from the selected previous-round baseline.
+`loglake-benchmarks` tasks #5907 and #5920 own the controlled comparison and
+its report.
+
+Acceptance requires all four conditions at once: equality on the seven
+`served_by` rows, no latency row beyond either its matched-control 2x band or
+its absolute ceiling, pool reservation back at 0 while idle, and the exact
+cross-shard sum. Otherwise the stack is not accepted and the report names
+every breached row or invariant.
+
+Three readings from the candidate round already hold: the typed Tier-1 routes
+were retained in every run; the host rollup was `LOST`, as the negative
+control; and after the 08:02:25Z restart the pool retained 11.6 GiB with
+`loglake_query_in_flight` 0.
+
+Verdict: not accepted yet
