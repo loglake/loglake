@@ -639,6 +639,7 @@ async fn run() -> Result<()> {
     // abandoned warm cycle or exec-pool task is a delta `increase()` can see.
     loglake_core::metrics::preregister(loglake_core::metrics::QUERY_SERVER_ALERTED_COUNTERS);
     loglake_query_server::jobs::initialize_metrics();
+    loglake_storage::initialize_decoded_file_cache_metrics();
     let build = loglake_core::build_info();
     metrics::gauge!(
         "loglake_build_info",
