@@ -488,8 +488,11 @@ sections of that work separately (`permit_wait`, `blob_fetch`, `decode`,
 reasons beside it — and, since #4718, the blob cache's own
 (`loglake_iceberg_puffin_blob_fetches_total`,
 `loglake_iceberg_puffin_blob_cache_lookups_total{outcome}`,
-`loglake_iceberg_puffin_blob_cache_evictions_total{reason}`), so a re-decode
-that also re-read the blob is a reading rather than an inference. One total could not say which section a regression was in:
+`loglake_iceberg_puffin_blob_cache_evictions_total{reason}`,
+`loglake_iceberg_puffin_blob_cache_bytes` and
+`loglake_iceberg_puffin_blob_cache_max_bytes`), so a re-decode
+that also re-read the blob is a reading rather than an inference, and the rate
+it re-read at is readable against the budget that produced it (#5374). One total could not say which section a regression was in:
 run #73 measured about 30 ns per file row before a first batch and the round's
 artifacts could not attribute it. Differential storage test
 (`tests/inverted_index.rs`) asserts ground-truth-correct counts across
