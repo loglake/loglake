@@ -869,6 +869,7 @@ if [ "$WITH_HEAVY" = 1 ]; then
         LOGLAKE_TEST_S3_ENDPOINT="$LOGLAKE_S3_HOST_ENDPOINT" \
         LOGLAKE_TEST_S3_ACCESS_KEY="$LOGLAKE_S3_ACCESS_KEY" \
         LOGLAKE_TEST_S3_SECRET_KEY="$LOGLAKE_S3_SECRET_KEY" \
+          timeout --signal=TERM --kill-after=10s 180s \
           cargo test -p loglake-storage --lib conditional_write_live -- \
             --ignored --nocapture >"$conditional_live_log" 2>&1 || conditional_live_rc=$?
         cat "$conditional_live_log" >>"$dlog"
