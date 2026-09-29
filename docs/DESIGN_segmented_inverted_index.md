@@ -558,7 +558,7 @@ Iceberg `UpdateStatisticsAction` they used emits an unconditional replacement
 (`third_party/iceberg/src/transaction/update_statistics.rs:79`) — so the second
 one to commit dropped the first's blobs anyway, exactly as before the guard.
 
-Since #5298 the LogLake registration path owns the action.
+Since #5298 the Loglake registration path owns the action.
 `RegisterFirstStatisticsAction` re-reads `statistics_for_snapshot` on every
 attempt and emits its `SetStatistics` only while the snapshot still carries
 none; a base that already has one yields no updates and no requirements, which

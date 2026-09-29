@@ -20,7 +20,7 @@ Listing/deletion go through a warehouse-scoped `opendal::Operator` — the Fs
 Statistics entries are retired before the physical sweep. The elected snapshot
 expiry transaction evaluates them after applying snapshot removal, and a direct
 `gc-orphans --apply` run performs the same maintenance step. An entry is
-eligible only when every blob is a LogLake-owned inverted-index type, every
+eligible only when every blob is a Loglake-owned inverted-index type, every
 blob names `data_file`, and no named file is alive in any retained snapshot.
 Entries with one live reference stay whole; foreign or incomplete entries are
 left untouched. Once `RemoveStatistics` commits, the Puffin object leaves the

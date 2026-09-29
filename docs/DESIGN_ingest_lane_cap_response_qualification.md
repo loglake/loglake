@@ -34,7 +34,7 @@ so it is reclamation rather than a guarantee for this key.
 ## Exporter evidence
 
 The bounded client used for this qualification is `opentelemetry-otlp 0.32.0`,
-the version pinned in this tree. LogLake itself builds its HTTP exporter without
+the version pinned in this tree. Loglake itself builds its HTTP exporter without
 the crate's `experimental-http-retry` feature. In that build the exporter calls
 `export_http_once` once for every batch; the batch processor logs the returned
 error and has already removed that batch from its buffer. HTTP `429`, `500` and
@@ -66,7 +66,7 @@ The crate's retry policy makes three retries by default and then reports that
 the telemetry data is lost. A retryable code postpones the drop; it does not
 preserve the batch indefinitely.
 
-LogLake's gRPC mapper currently copies a delay into plain `retry-after` metadata.
+Loglake's gRPC mapper currently copies a delay into plain `retry-after` metadata.
 That is not `google.rpc.RetryInfo` in the status details, and this client does
 not read it. A future `429` mapping must add `Code::ResourceExhausted`; if it
 promises a delay, it must encode the standard detail as well as the HTTP header.

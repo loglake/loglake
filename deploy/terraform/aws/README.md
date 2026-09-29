@@ -1,4 +1,4 @@
-# loglake AWS Terraform
+# Loglake AWS Terraform
 
 Provisions everything the BYOC Helm chart references but doesn't
 manage itself:

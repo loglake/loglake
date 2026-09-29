@@ -1,7 +1,7 @@
 # Vendored apache/iceberg-rust `iceberg-storage-opendal` 0.10.1
 
 This fork is based on the published `iceberg-storage-opendal` crate 0.10.1.
-LogLake retains multipart controls, upload-class permits, retry policy,
+Loglake retains multipart controls, upload-class permits, retry policy,
 observability, and its reqsign 3 AWS credential provider.
 
 The upstream base is commit

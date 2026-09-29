@@ -2,7 +2,7 @@
 
 End-to-end install / smoke / teardown wrappers around
 `deploy/terraform/aws/` and `deploy/helm/loglake/`. These are the
-quickest path to validate a loglake build against real AWS.
+quickest path to validate a Loglake build against real AWS.
 
 ## Prerequisites
 

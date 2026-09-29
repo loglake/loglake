@@ -1,7 +1,7 @@
 apiVersion: v2
 name: loglake-operator
 description: |
-  Kubernetes operator for loglake: reconciles LoglakeCluster CRs into
+  Kubernetes operator for Loglake: reconciles LoglakeCluster CRs into
   ingester / compactor / query-server Deployments and drives
   per-tenant lifecycle + autoscaling.
 type: application

@@ -103,7 +103,7 @@ file.
 
 The one case that avoids the decode: a file whose manifest `[min, max]`
 timestamps lie inside a single aggregate bucket contributes its whole
-group-count footer to that one bucket. LogLake writes time-clustered, so on a
+group-count footer to that one bucket. Loglake writes time-clustered, so on a
 compacted table this should cover a large fraction of files; on an
 interleaved-arrival table it covers few. The rebuild should take the footer
 where containment is provable and decode otherwise — the same classification

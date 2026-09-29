@@ -1,6 +1,6 @@
-# loglake Helm chart
+# Loglake Helm chart
 
-Installs the loglake data plane (ingester, compactor, and query-server)
+Installs the Loglake data plane (ingester, compactor, and query-server)
 backed by a customer-provided RDS Postgres + S3 warehouse.
 
 This chart is intentionally light on managed infrastructure: it
@@ -549,7 +549,7 @@ metric would read double.
 autoscaling PromQL selects on.
 
 Set `prometheusRule.enabled=true` for alerts on the failure modes
-loglake has hit or pins with a deterministic loss regression: silent-loss counters (abandoned mirror
+Loglake has hit or pins with a deterministic loss regression: silent-loss counters (abandoned mirror
 registrations, CRC mismatches, refused writes, lost group-count
 deltas), a stalled drain, a non-converging layout, query-pool
 saturation, sustained pool refusals (`LoglakeQueryPoolRefusing`), incomplete

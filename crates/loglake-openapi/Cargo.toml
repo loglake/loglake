@@ -3,7 +3,7 @@ name = "loglake-openapi"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Emit the committed OpenAPI 3.1 specs for the loglake HTTP servers."
+description = "Emit the committed OpenAPI 3.1 specs for the Loglake HTTP servers."
 
 [[bin]]
 name = "loglake-openapi"

@@ -4,7 +4,7 @@ A single-node kind cluster running:
 
 - **postgres** for the Iceberg catalog
 - **minio** for the S3 warehouse
-- the **loglake** Helm chart (ingester, compactor, and query-server)
+- the **Loglake** Helm chart (ingester, compactor, and query-server)
 
 Unlike `deploy/aws/`, this does *not* exercise IRSA, EFS, or RDS — it
 exists for chart development and quick functional smoke testing
@@ -32,10 +32,10 @@ scripts/kind-down.sh       # helm uninstall + kind delete cluster
 
 `kind-round.sh` is the non-interactive runner used by the manager's
 `kind_round` playbook. It installs pinned kube-prometheus-stack and KEDA
-charts, upgrades LogLake with its ServiceMonitors, PrometheusRules and
+charts, upgrades Loglake with its ServiceMonitors, PrometheusRules and
 ScaledObjects enabled, and installs the query tier with KEDA headroom
 (`minReplicaCount: 2`, `maxReplicaCount: 4`) and short anti-flap windows so a
-scale event fits inside the round. It then runs every configured LogLake
+scale event fits inside the round. It then runs every configured Loglake
 benchmark SQL shape, checks that a transparent `GROUP BY` merges the shards
 without losing rows, and prints:
 

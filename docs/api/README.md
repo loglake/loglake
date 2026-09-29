@@ -1,6 +1,6 @@
 # OpenAPI specifications
 
-Machine-readable OpenAPI 3.1 descriptions of loglake's HTTP APIs:
+Machine-readable OpenAPI 3.1 descriptions of Loglake's HTTP APIs:
 
 - **`openapi-ingest.yaml`** — the ingest server (`loglake ingest-server`, default
   `:8088`): OTLP/HTTP logs and traces, plus an Elasticsearch 7.10-shaped

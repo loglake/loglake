@@ -1,6 +1,6 @@
 {
  "uid": "loglake-overview",
- "title": "loglake overview",
+ "title": "Loglake overview",
  "tags": [
   "loglake",
   "logs",
@@ -87,7 +87,7 @@
     "graphMode": "none",
     "justifyMode": "auto"
    },
-   "description": "Build version and commit reported by each scraped loglake server process."
+   "description": "Build version and commit reported by each scraped Loglake server process."
   },
   {
    "id": 100,

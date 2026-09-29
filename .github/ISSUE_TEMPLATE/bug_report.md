@@ -15,7 +15,7 @@ labels: bug
 
 ## Environment
 
-- loglake version / commit:
+- Loglake version / commit:
 - Deployment: docker-compose / Helm / operator / bare binary
 - Object store + catalog: (e.g. MinIO+Postgres, S3+RDS)
 

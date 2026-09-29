@@ -66,7 +66,7 @@ larger one still requires Puffin registration. Before decoding a file, the
 rebuild checks each configured column against registered Puffin blobs and the
 file footer. A second pass therefore registers no duplicate statistics file.
 Iceberg permits only one statistics file per snapshot. If a rebuild finds
-missing coverage on a snapshot that already has one, LogLake preserves the
+missing coverage on a snapshot that already has one, Loglake preserves the
 registered file and defers the new blobs; it logs their data-file paths and
 increments
 `loglake_index_registration_deferred_total{reason="snapshot_has_statistics"}`.
@@ -424,9 +424,9 @@ snapshot the blob was computed from"
 (`third_party/iceberg/src/puffin/metadata.rs:64`) against "The snapshot id of
 the statistics file" (`third_party/iceberg/src/spec/statistic_file.rs:28`) — so
 under that reading the two values differing is the two fields saying what they
-mean. No LogLake reader compares them: `ArrowReader::puffin_blob_metadata`
+mean. No Loglake reader compares them: `ArrowReader::puffin_blob_metadata`
 matches on blob type, `data_file` and `column`, and `puffin_inverted_index`
-adds `row_group_size`. It would still be the first entry LogLake writes where
+adds `row_group_size`. It would still be the first entry Loglake writes where
 they differ. The seg2 writer's three-copy agreement
 (`assert_current_seg2_sequence_agreement`, #5260) is a different case: there
 the blobs were computed from the snapshot they are attached to, so all three

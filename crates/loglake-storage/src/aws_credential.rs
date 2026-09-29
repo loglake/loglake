@@ -144,7 +144,7 @@ impl AwsChainConfig {
     }
 }
 
-/// Full LogLake AWS provider chain for reqsign 3.
+/// Full Loglake AWS provider chain for reqsign 3.
 pub struct LoglakeAwsLoader {
     providers: Vec<Box<dyn ProvideCredentialDyn<Credential = Credential>>>,
     timeout: Duration,

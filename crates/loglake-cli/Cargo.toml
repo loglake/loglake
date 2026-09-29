@@ -3,7 +3,7 @@ name = "loglake-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "loglake CLI: smoke-test ingest and query for the loglake storage layer."
+description = "Loglake CLI: smoke-test ingest and query for the Loglake storage layer."
 
 [[bin]]
 name = "loglake"

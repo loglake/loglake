@@ -1,6 +1,6 @@
 # Public release validation
 
-Customer-runnable release tests live in **loglake**. Comparative performance
+Customer-runnable release tests live in **Loglake**. Comparative performance
 benchmarks belong to **loglake/loglake-benchmarks**. Release acceptance, install
 checks, cancellation soaks and burn-ins must not be dependencies of that public
 comparison site. Source CI and a successful performance run do not certify the
@@ -41,7 +41,7 @@ object-store data. Temporary known fixture credentials are local to this test.
 
 `--dependency-policy cached-diagnostic` is an explicit escape for investigating
 runtime behavior when a dependency registry is unavailable. It uses existing
-MinIO/Postgres images and retains their digests; the LogLake image still pulls
+MinIO/Postgres images and retains their digests; the Loglake image still pulls
 anonymously. **It never qualifies anonymous clean installation.** The default
 public policy fails rather than substituting a cache, mirror or locally built
 product image.

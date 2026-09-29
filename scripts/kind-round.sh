@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Run the manager's evidence-producing kind round: LogLake, Prometheus and
+# Run the manager's evidence-producing kind round: Loglake, Prometheus and
 # KEDA, followed by sustained ingest/query load and machine-readable evidence.
 
 set -euo pipefail
@@ -2516,7 +2516,7 @@ helm --kube-context "$KUBE_CONTEXT" upgrade --install keda kedacore/keda \
   --namespace "$KEDA_NAMESPACE" --create-namespace \
   --wait --timeout 10m
 
-log "upgrade LogLake with monitoring, mirror reconciliation and a ${QUERY_SCALE_BASE}-${QUERY_SCALE_TARGET} query KEDA range"
+log "upgrade Loglake with monitoring, mirror reconciliation and a ${QUERY_SCALE_BASE}-${QUERY_SCALE_TARGET} query KEDA range"
 LOGLAKE_HELM_ARGS=(
   --namespace "$NAMESPACE" \
   --values "$ROOT/deploy/kind/values.kind.yaml" \

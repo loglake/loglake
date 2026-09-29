@@ -217,7 +217,7 @@ scripts/ci-local.sh --strict
 
 Recorded 2026-09-23, before spending on the matched control round.
 
-The candidate is LogLake `59ce561` (0.2.0), image
+The candidate is Loglake `59ce561` (0.2.0), image
 `loglake:bench-20260923-071516`, digest
 `sha256:283ae38377746fc846e2853d24b6730b33dddbf4a373818d78de41715cada043`,
 using `loglake-benchmarks` revision `590df579b917`. Its artifacts are retained as
@@ -272,8 +272,8 @@ must run a cross-shard `GROUP BY` whose counts for each group sum to `record_cou
 
 ### Historical ceilings and current failures
 
-The 2026-09-02 and 2026-09-03 baselines used LogLake `7c84634` and `4e03864`
-with `loglake-benchmarks` revision `ac47b1f`. Those LogLake SHAs exist on
+The 2026-09-02 and 2026-09-03 baselines used Loglake `7c84634` and `4e03864`
+with `loglake-benchmarks` revision `ac47b1f`. Those Loglake SHAs exist on
 `private/main` only. The
 rounds predate `provenance.json` and retain no image digest,
 `ingest-summary.json` or pod size. They supplied the absolute ceilings; they

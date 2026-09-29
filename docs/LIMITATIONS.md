@@ -1,6 +1,6 @@
 # Things deliberately not yet done
 
-The engineering record of what loglake 0.1.0 leaves out on purpose, why, and
+The engineering record of what Loglake 0.1.0 leaves out on purpose, why, and
 what would change it — one entry per decision, kept current with the code. It
 moved here from the README on 2026-09-15; the docs site's
 [Limitations](https://docs.loglake.dev/about/limitations/) page is the
@@ -41,7 +41,7 @@ in [`ARCHITECTURE.md`](ARCHITECTURE.md).
   `events.timestamp` is rejected as ambiguous by DataFusion 53.1.0. The
   newest crates.io release checked on 2026-09-20, DataFusion 55.1.0, retains
   the same qualified/unqualified collision in `DFSchema::check_names`, though
-  PostgreSQL resolves this shape to the source column. LogLake therefore keeps
+  PostgreSQL resolves this shape to the source column. Loglake therefore keeps
   the conservative refusal. An automatic derived-table rewrite would also
   lose the ordered-scan, clipped-scan, managed-index and distributed ordered
   merge classifications, all of which require the table or sort at the query
@@ -143,7 +143,7 @@ in [`ARCHITECTURE.md`](ARCHITECTURE.md).
   the write opt-in and
   `LOGLAKE_INDEX_REBUILD=1` both on, a file whose sidecar the writer refuses
   stays unindexed until a later rewrite or a CLI rebuild at a later snapshot:
-  Iceberg permits one statistics file per snapshot, so LogLake
+  Iceberg permits one statistics file per snapshot, so Loglake
   preserves the rewrite's registered seg2 blobs and counts the deferred v1
   registration instead of replacing them
   ([`DESIGN_segmented_inverted_index.md`](DESIGN_segmented_inverted_index.md),
@@ -195,14 +195,14 @@ in [`ARCHITECTURE.md`](ARCHITECTURE.md).
   writer's pinned checksummed-Zstd codec; its corrupt-frame behavior is still a
   query error rather than scan fallback. Seg2 uses a CRC per addressable block
   and is a separate format boundary.
-- **Statistics-file retirement is whole-entry and limited to LogLake-owned
+- **Statistics-file retirement is whole-entry and limited to Loglake-owned
   inverted indexes.** The snapshot-expiry and orphan-GC maintenance paths
   remove an Iceberg statistics entry only when every blob has a `data_file`
-  property, every blob type is one of LogLake's v1 or segmented inverted-index
+  property, every blob type is one of Loglake's v1 or segmented inverted-index
   types, and none of those files is alive in any retained snapshot. An entry
-  with one live blob and one retired blob stays whole; LogLake does not rewrite
+  with one live blob and one retired blob stays whole; Loglake does not rewrite
   the Puffin file to split it. An entry containing another engine's blob type,
-  or an owned blob without `data_file`, also stays untouched because LogLake
+  or an owned blob without `data_file`, also stays untouched because Loglake
   cannot prove its lifetime. Keeping a mixed file costs metadata and object
   storage until its last live reference retires, but preserves the Iceberg
   interoperability boundary.
@@ -472,7 +472,7 @@ in [`ARCHITECTURE.md`](ARCHITECTURE.md).
   `metadata/loglake-agg-wide.json`, `metadata/loglake-agg-deltas/`) and nothing
   adopts them, because the name they share with the current table is exactly
   what proves nothing; nothing deletes them either — the orphan GC still counts
-  them as loglake's. So an upgraded table starts a fresh aggregate at its first
+  them as Loglake's. So an upgraded table starts a fresh aggregate at its first
   commit, which is short of `record_count` for every row that predates the
   upgrade: `GROUP BY` answers stay exact and fall to the per-file tiers. The
   maintenance census finds that state within 15 minutes and reports it
@@ -522,7 +522,7 @@ in [`ARCHITECTURE.md`](ARCHITECTURE.md).
   read error and the attempts spent, and its batch siblings commit on the next
   pass. What is left out is any automatic way back. `poison/` is excluded from
   the `orphans/` disposition that runs every cycle, survives restarts, and is
-  never deleted or rewritten: requeueing is an operator running `loglake
+  never deleted or rewritten: requeueing is an operator running `Loglake
   wal-requeue --wal <wal-root>` once the cause is fixed, and a segment requeued
   unchanged simply spends its attempts again. Where the corruption is local and
   the WAL mirror holds a good copy, `loglake wal-recover --apply` is the other
@@ -552,7 +552,7 @@ in [`ARCHITECTURE.md`](ARCHITECTURE.md).
   [`DESIGN_managed_index_put_preconditions.md`](DESIGN_managed_index_put_preconditions.md).
 - **Pre-0.1.0 warehouses are not migrated to the current timestamp contract.**
   Tables written before 2026-09-06 are Iceberg format version 3 with a
-  nanosecond `timestamp` and no `timestamp_ns` sibling. loglake still reads
+  nanosecond `timestamp` and no `timestamp_ns` sibling. Loglake still reads
   them, but no external v2-only engine can, and there is no in-place upgrade:
   Iceberg cannot change a column's precision and cannot downgrade a v3 table.
   **Recreate such a warehouse** (delete and re-ingest). A read-old/write-new
@@ -579,7 +579,7 @@ in [`ARCHITECTURE.md`](ARCHITECTURE.md).
   attachment and Trino versions other than 483 are covered by no measurement.
   The object-storage external read remains open (#1560).
   `scripts/check-external-timestamp-contract.sh` is the regression check, but
-  only its loglake half (format version, Iceberg field types, the
+  only its Loglake half (format version, Iceberg field types, the
   `timestamp_ns` round-trip, the total order) runs without those engines
   installed, and the script does not include Trino. A run that verified nothing
   external no longer reads as green: `scripts/ci-local.sh --all --strict` passes
@@ -630,7 +630,7 @@ in [`ARCHITECTURE.md`](ARCHITECTURE.md).
   query pod, and DataFusion stops at 8Gi so a query fails before kubelet
   eviction. PVC-backed spill for sorts larger than a node's ephemeral-storage
   budget is not implemented. DataFusion exposes current spill use internally,
-  but LogLake does not publish a whole-runtime spill-bytes metric until it has a
+  but Loglake does not publish a whole-runtime spill-bytes metric until it has a
   dashboard reader; query failures and pod ephemeral-storage remain the signals.
 - **Interactive scans slow down during a large backfill, in proportion to how
   far compaction is behind.** A scan's cost tracks overlap depth, and depth
@@ -1167,7 +1167,7 @@ in [`ARCHITECTURE.md`](ARCHITECTURE.md).
   mode) and query for visibility.
 - **An endpoint which advertises conditional writes but silently accepts stale
   overwrites is refused for conditional warehouse mutations.** Before the
-  first remote mutation in a process context, LogLake writes the fixed
+  first remote mutation in a process context, Loglake writes the fixed
   non-JSON `_loglake/config/.conditional-write-probe-<process-id>` object and
   independently tries a stale `If-Match` overwrite and an existing-key
   `If-None-Match: *` overwrite. Each request must return a recognized
@@ -1349,7 +1349,7 @@ in [`ARCHITECTURE.md`](ARCHITECTURE.md).
   skipped and the cursor advances past it, which is what keeps continuous
   compaction (re-cluster, retention, delete tasks — all Iceberg `overwrite`
   commits whose replacement files are `ADDED`) from re-delivering rows a
-  consumer already has. loglake marks its own rewrites with the
+  consumer already has. Loglake marks its own rewrites with the
   `loglake.rewrite` snapshot-summary property; a non-append commit written by
   another engine (Spark `INSERT OVERWRITE`, `MERGE`, a row-level delete) is
   skipped too, so any rows it genuinely added are never delivered. It is
@@ -1421,7 +1421,7 @@ in [`ARCHITECTURE.md`](ARCHITECTURE.md).
   acknowledgement is not remotely durable. `wal.mirror.activeIntervalSecs`
   snapshots every in-flight segment every N seconds — one object per open
   writer, keyed `_active/<tenant>[/<index>]/<segment>` — which narrows that
-  window to N seconds on one recovery path: an operator runs `loglake
+  window to N seconds on one recovery path: an operator runs `Loglake
   wal-recover --apply` to rebuild the WAL root from the mirror, and the
   filesystem drain commits the recovered segments. Until #5055 that path
   narrowed nothing on a server: the loop was handed the ingester's root
@@ -1457,10 +1457,10 @@ in [`ARCHITECTURE.md`](ARCHITECTURE.md).
   requires investigation. The file size is the whole of that bound, and in a
   segment with no frame CRC behind it a torn tail and deliberate corruption
   are the same bytes. The ack is also only as durable as the filesystem under
-  the WAL: loglake syncs the segment's bytes
+  the WAL: Loglake syncs the segment's bytes
   and every directory entry that names it, and assumes those syncs reach the
   device. A network filesystem answers `fsync(2)` on its own terms and
-  loglake measures none of them, so ext4 or xfs on a node-attached volume is
+  Loglake measures none of them, so ext4 or xfs on a node-attached volume is
   the substrate the power-loss claim is made for.
 - **`loglake wal-recover` can only tell the mirror root from its parent where
   the mirror has a marker, or where `--catalog` is given.** #4928 made a
@@ -1475,7 +1475,7 @@ in [`ARCHITECTURE.md`](ARCHITECTURE.md).
   #4973 answers this in two parts. The command now PLANS unless it is given
   `--apply`, so the reconstructed destinations — the tenant an operator does
   not have, spelled out — are on screen before a byte is written. And where
-  the mirror carries one of loglake's own markers (`_active/…​.arrow.partial`,
+  the mirror carries one of Loglake's own markers (`_active/…​.arrow.partial`,
   or `<tenant>/<index>/owner` from the catalog-claim drain) the listing
   settles it: at its own depth the marker confirms the root, one component
   deeper it refuses the run and names the directory to pass instead.
@@ -1630,7 +1630,7 @@ in [`ARCHITECTURE.md`](ARCHITECTURE.md).
   commit either. Nothing on the commit path recomputes them — the counts are
   cumulative, and a commit knows only its own delta — so the table answers from
   the exact per-file tiers until `rebuild-time-aggregates` runs. A foreign
-  overwrite (a writer that is not LogLake) is the same state and deliberately
+  overwrite (a writer that is not Loglake) is the same state and deliberately
   unbridgeable, because an unmarked N-for-N overwrite preserves the row total
   while changing every answer. Snapshot expiry no longer joins this list: it
   re-roots the edge onto surviving ancestry rather than orphaning it. Two
@@ -1856,7 +1856,7 @@ in [`ARCHITECTURE.md`](ARCHITECTURE.md).
   into one fetch and charges the length of that fetch
   (`get_byte_ranges`/`merge_ranges` in
   `third_party/iceberg/src/arrow/reader/file_reader.rs`); nothing set by
-  loglake turns this off, because leaving the range knobs unset selects the
+  Loglake turns this off, because leaving the range knobs unset selects the
   reader's own 1 MiB default rather than no coalescing. A selective query whose
   needle sits a few pages into a column chunk is therefore charged for the
   dictionary page, the pages between it and the one it wanted, and the page
@@ -1897,7 +1897,7 @@ in [`ARCHITECTURE.md`](ARCHITECTURE.md).
   smoke and kind-round helper clients. Bitnami moved these Debian images to an
   archive in August 2025 and does not update them, so they receive no MinIO,
   base-image or security fixes. They run only in ephemeral development and
-  qualification stacks; the LogLake release images and production Helm charts
+  qualification stacks; the Loglake release images and production Helm charts
   do not contain them. Moving the test dependency to a maintained distribution
   still needs either a project-published build with an AGPL-3.0 redistribution
   policy or a qualified replacement S3 implementation. Tracked as #6118 and

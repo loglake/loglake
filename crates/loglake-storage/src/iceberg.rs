@@ -112,7 +112,7 @@ pub const QUERY_AUDIT_TABLE: &str = "query_audit";
 
 /// Return the oldest Iceberg format version capable of representing `schema`.
 /// Nanosecond timestamps were added in format version 3; all other types that
-/// LogLake currently emits are valid in version 2.
+/// Loglake currently emits are valid in version 2.
 pub(crate) fn minimum_format_version(schema: &iceberg::spec::Schema) -> FormatVersion {
     let mut pending = schema
         .as_struct()
@@ -1719,7 +1719,7 @@ impl Default for GcOptions {
 /// Outcome of an orphan-GC pass. See [`IcebergContext::gc_orphans`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GcReport {
-    /// LogLake-owned statistics entries that referenced no retained live data
+    /// Loglake-owned statistics entries that referenced no retained live data
     /// file and were eligible for removal before the orphan walk.
     pub statistics_entries_eligible: usize,
     /// Eligible statistics entries removed from table metadata (0 in dry-run).
@@ -1727,7 +1727,7 @@ pub struct GcReport {
     /// Statistics entries kept because at least one blob references a retained
     /// live data file. Mixed live/retired entries are counted here.
     pub statistics_entries_kept_live: usize,
-    /// Entries left untouched because they contain a blob type LogLake does
+    /// Entries left untouched because they contain a blob type Loglake does
     /// not own.
     pub statistics_entries_skipped_unowned: usize,
     /// Entries left untouched because an owned blob has no `data_file`
@@ -1748,7 +1748,7 @@ pub struct GcReport {
     pub deleted: usize,
 }
 
-/// Outcome of deciding which Iceberg statistics entries LogLake may retire.
+/// Outcome of deciding which Iceberg statistics entries Loglake may retire.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StatisticsRetirementReport {
     /// Owned entries whose blobs all reference retired data files.
@@ -1757,7 +1757,7 @@ pub struct StatisticsRetirementReport {
     pub removed: usize,
     /// Entries kept whole because at least one blob still references live data.
     pub kept_live: usize,
-    /// Entries containing at least one blob type LogLake does not own.
+    /// Entries containing at least one blob type Loglake does not own.
     pub skipped_unowned: usize,
     /// Owned entries containing a blob without a `data_file` property.
     pub skipped_missing_data_file: usize,
@@ -5824,7 +5824,7 @@ fn file_time_group_counts(
 /// 1TB, re-read on every commit's `load_table`).
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct SnapshotAggregates {
-    /// The newest data snapshot whose LogLake-published contributions are all
+    /// The newest data snapshot whose Loglake-published contributions are all
     /// present in this object. A row total alone cannot establish this: an
     /// unmarked N-for-N overwrite preserves the total while changing the
     /// answer. Readers also admit later snapshots when every intervening
@@ -6033,7 +6033,7 @@ mod aggregate_coverage_link_tests {
         let mut aggs = SnapshotAggregates::default();
         aggs.add_coverage_link(link(None, 11, 1));
         // Snapshot 12 is a foreign overwrite and publishes no link. The next
-        // LogLake append cannot make an artifact rooted at 11 cover snapshot 13.
+        // Loglake append cannot make an artifact rooted at 11 cover snapshot 13.
         aggs.add_coverage_link(link(Some(12), 13, 3));
         assert_eq!(aggs.coverage.map(|coverage| coverage.snapshot_id), Some(11));
         assert_eq!(aggs.coverage_links, vec![link(Some(12), 13, 3)]);
@@ -10521,7 +10521,7 @@ fn append_coverage_link(committed: &Table) -> Option<AggregateCoverageLink> {
 }
 
 /// Whether an artifact covering `coverage` also covers the table generation a
-/// query is serving. Only LogLake's row-conserving re-cluster may bridge the
+/// query is serving. Only Loglake's row-conserving re-cluster may bridge the
 /// gap; retention, delete tasks, foreign overwrites and appends all require a
 /// fresh aggregate publication.
 fn aggregate_covers_current_snapshot(table: &Table, coverage: Option<AggregateCoverage>) -> bool {
@@ -10571,7 +10571,7 @@ fn aggregate_covers_current_snapshot_excluding(
     }
 }
 
-/// Whether every LogLake contribution up to the table's current generation has
+/// Whether every Loglake contribution up to the table's current generation has
 /// LANDED in this artifact — counting the links still waiting on a missing
 /// predecessor, which `coverage` alone does not.
 ///
@@ -17578,9 +17578,9 @@ impl IcebergContext {
         self.execute_all_delete_tasks_inner(false).await
     }
 
-    /// Remove statistics entries that LogLake can prove describe no data file
+    /// Remove statistics entries that Loglake can prove describe no data file
     /// reachable through a retained snapshot. Only entries made entirely of
-    /// LogLake inverted-index blob types, with a `data_file` property on every
+    /// Loglake inverted-index blob types, with a `data_file` property on every
     /// blob, are eligible. A mixed live/retired entry stays whole.
     ///
     /// `apply=false` reports the classification without committing. The

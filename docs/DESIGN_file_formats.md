@@ -2,9 +2,9 @@
 
 **Status:** contract, from v0.1.0.
 
-loglake stores its data in Parquet under an Apache Iceberg table, both of which
+Loglake stores its data in Parquet under an Apache Iceberg table, both of which
 have their own compatibility stories. This document covers the layer *we* own:
-the accelerators loglake writes into Parquet footer key-value metadata, into
+the accelerators Loglake writes into Parquet footer key-value metadata, into
 Iceberg table/snapshot properties, and into side objects. Those are our formats,
 so their evolution is our problem.
 

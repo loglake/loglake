@@ -1,11 +1,11 @@
-# Contributing to loglake
+# Contributing to Loglake
 
-Thanks for your interest in loglake. This document covers the mechanics of
+Thanks for your interest in Loglake. This document covers the mechanics of
 building, testing, and submitting changes.
 
 ## Building
 
-loglake is a Rust workspace. The pinned toolchain is in `rust-toolchain.toml`
+Loglake is a Rust workspace. The pinned toolchain is in `rust-toolchain.toml`
 (currently rustc 1.95.0); `rustup` picks it up automatically.
 To bump it, update the channel in `rust-toolchain.toml`, then run
 `scripts/ci-local.sh` with the new toolchain before submitting the change.
@@ -71,7 +71,7 @@ external services.
 
 ## Local stack
 
-A full local deployment (Postgres catalog + MinIO warehouse + loglake) is one
+A full local deployment (Postgres catalog + MinIO warehouse + Loglake) is one
 command:
 
 ```sh

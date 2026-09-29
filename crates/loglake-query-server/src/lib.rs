@@ -494,7 +494,7 @@ impl AppState {
 #[derive(utoipa::OpenApi)]
 #[openapi(
     info(
-        title = "loglake query",
+        title = "Loglake query",
         description = "DataFusion SQL over the Iceberg tables, index and \
                        index-template management, batch jobs, GDPR delete tasks, and a \
                        Jaeger-compatible trace read API.\n\n\

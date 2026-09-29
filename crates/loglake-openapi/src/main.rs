@@ -36,7 +36,7 @@ const SPECS: &[Spec] = &[
 #[derive(Parser, Debug)]
 #[command(
     name = "loglake-openapi",
-    about = "Emit the committed OpenAPI 3.1 specs for the loglake HTTP servers."
+    about = "Emit the committed OpenAPI 3.1 specs for the Loglake HTTP servers."
 )]
 struct Cli {
     /// Directory to write the spec files into.

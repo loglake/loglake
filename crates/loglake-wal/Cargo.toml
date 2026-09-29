@@ -3,7 +3,7 @@ name = "loglake-wal"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Write-Ahead Log: Arrow IPC stream segments for the loglake ingest path."
+description = "Write-Ahead Log: Arrow IPC stream segments for the Loglake ingest path."
 
 [dependencies]
 loglake-core = { workspace = true }

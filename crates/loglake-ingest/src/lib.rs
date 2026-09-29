@@ -1019,7 +1019,7 @@ pub struct StreamedEvent {
 #[derive(utoipa::OpenApi)]
 #[openapi(
     info(
-        title = "loglake ingest",
+        title = "Loglake ingest",
         description = "OTLP/HTTP logs and traces, plus an Elasticsearch 7.10-shaped \
                        bulk-ingest surface for existing shippers.\n\n\
                        Query lives on a separate server (`loglake-query-server`, \

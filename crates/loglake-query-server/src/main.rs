@@ -20,7 +20,7 @@ use loglake_storage::{configure_query_scan_tuning, iceberg::IcebergContext, Quer
 #[derive(Parser, Debug)]
 #[command(
     name = "loglake-query-server",
-    about = "HTTP query API for the loglake Iceberg warehouse",
+    about = "HTTP query API for the Loglake Iceberg warehouse",
     version = loglake_core::BUILD_VERSION
 )]
 struct Cli {

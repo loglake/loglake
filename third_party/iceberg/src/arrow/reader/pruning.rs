@@ -2,7 +2,7 @@
 // or more contributor license agreements. See the NOTICE file distributed
 // with this work for additional information regarding copyright ownership.
 
-//! LogLake bloom, inverted-index, and promoted-column pruning.
+//! Loglake bloom, inverted-index, and promoted-column pruning.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
