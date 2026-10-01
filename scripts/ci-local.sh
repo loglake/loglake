@@ -871,6 +871,11 @@ if [ "$WITH_HEAVY" = 1 ]; then
         LOGLAKE_TEST_S3_ENDPOINT="$LOGLAKE_S3_HOST_ENDPOINT" \
         LOGLAKE_TEST_S3_ACCESS_KEY="$LOGLAKE_S3_ACCESS_KEY" \
         LOGLAKE_TEST_S3_SECRET_KEY="$LOGLAKE_S3_SECRET_KEY" \
+        LOGLAKE_WAREHOUSE_URL="s3://loglake-warehouse/" \
+        AWS_ACCESS_KEY_ID="$LOGLAKE_S3_ACCESS_KEY" \
+        AWS_SECRET_ACCESS_KEY="$LOGLAKE_S3_SECRET_KEY" \
+        AWS_REGION="$LOGLAKE_S3_REGION" \
+        AWS_ENDPOINT_URL="$LOGLAKE_S3_HOST_ENDPOINT" \
           timeout --signal=TERM --kill-after=10s 180s \
           cargo test -p loglake-storage --lib conditional_write_live -- \
             --ignored --nocapture >"$conditional_live_log" 2>&1 || conditional_live_rc=$?
@@ -880,7 +885,7 @@ if [ "$WITH_HEAVY" = 1 ]; then
             "$conditional_live_log"
         )
         if [ "$conditional_live_rc" -ne 0 ] \
-          || [ "$conditional_passed" -ne 2 ] \
+          || [ "$conditional_passed" -ne 3 ] \
           || [ "$conditional_failed" -ne 0 ] \
           || [ "$conditional_results" -ne 1 ]; then
           echo "conditional-write live tests FAIL ($conditional_passed passed, $conditional_failed failed, $conditional_results result lines)" \
