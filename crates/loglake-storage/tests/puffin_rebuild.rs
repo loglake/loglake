@@ -122,7 +122,7 @@ fn ordered_text_context() -> SessionContext {
     let base = loglake_storage::session_context_with_order(
         Some(1),
         None,
-        Some(loglake_storage::PreferredScanOrder { descending: true }),
+        Some(loglake_storage::PreferredScanOrder::timestamp(true)),
     );
     let mut state = base.state();
     state
