@@ -2,7 +2,7 @@
 # `LoglakeCluster.spec.image` field — that one is the image rolled
 # onto the workload Deployments the operator manages.
 image:
-  repository: ghcr.io/limnion-ai/loglake-operator
+  repository: ghcr.io/loglake/loglake-operator
   tag: ""
   pullPolicy: IfNotPresent
 imagePullSecrets: []

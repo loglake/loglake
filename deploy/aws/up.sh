@@ -234,7 +234,7 @@ YAML
 # 5. helm install/upgrade
 # ---------------------------------------------------------------------------
 log "helm: install/upgrade $RELEASE"
-# `image.repository` defaults to ghcr.io/limnion-ai/loglake in the
+# `image.repository` defaults to ghcr.io/loglake/loglake in the
 # chart (and in the Terraform-emitted helm_values). For smoke we
 # pushed a fresh build to the per-account ECR — override
 # explicitly so EKS pulls from there rather than ghcr.

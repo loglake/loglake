@@ -49,7 +49,7 @@ output "ghcr_pull_through_repo_prefix" {
   description = "ECR pull-through cache prefix for GHCR (only useful when create_ecr_pull_through=true)."
   value = (
     var.create_ecr_pull_through
-    ? "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.region}.amazonaws.com/ghcr/limnion-ai/loglake"
+    ? "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.region}.amazonaws.com/ghcr/loglake/loglake"
     : null
   )
 }
@@ -59,7 +59,7 @@ output "helm_values" {
   description = "Helm values snippet matching this Terraform deployment."
   value = yamlencode({
     image = {
-      repository = "ghcr.io/limnion-ai/loglake"
+      repository = "ghcr.io/loglake/loglake"
     }
     s3 = {
       bucket = aws_s3_bucket.warehouse.id
