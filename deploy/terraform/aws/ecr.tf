@@ -1,7 +1,7 @@
 # Optional ECR pull-through cache against GHCR. When enabled, the
 # Helm chart's `image.repository` can point at
-# `<account>.dkr.ecr.<region>.amazonaws.com/ghcr/limnion-ai/loglake`
-# instead of `ghcr.io/limnion-ai/loglake`, and ECR will fetch + cache
+# `<account>.dkr.ecr.<region>.amazonaws.com/ghcr/loglake/loglake`
+# instead of `ghcr.io/loglake/loglake`, and ECR will fetch + cache
 # images on demand.
 
 resource "aws_ecr_pull_through_cache_rule" "ghcr" {

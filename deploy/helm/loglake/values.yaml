@@ -27,7 +27,7 @@ tenant:
 # Image
 # -----------------------------------------------------------------------
 image:
-  repository: ghcr.io/limnion-ai/loglake
+  repository: ghcr.io/loglake/loglake
   # Empty = Chart.appVersion.
   tag: ""
   pullPolicy: IfNotPresent

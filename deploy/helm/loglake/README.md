@@ -29,7 +29,7 @@ plug straight into `--values`.
 ```bash
 helm install loglake ./deploy/helm/loglake \
   --namespace loglake --create-namespace \
-  --set image.repository=ghcr.io/limnion-ai/loglake \
+  --set image.repository=ghcr.io/loglake/loglake \
   --set image.tag=0.2.1 \
   --set s3.bucket=my-customer-warehouse \
   --set s3.region=us-east-1 \
@@ -39,7 +39,7 @@ helm install loglake ./deploy/helm/loglake \
 
 Image tags are numeric, matching the chart's `appVersion`: the release
 is tagged `v0.2.1` in git but published as
-`ghcr.io/limnion-ai/loglake:0.2.1`. Leaving `image.tag` unset picks the
+`ghcr.io/loglake/loglake:0.2.1`. Leaving `image.tag` unset picks the
 `appVersion` of the chart you installed, which is the paired image.
 
 For non-trivial deployments, write a `values.yaml` and pass `-f`
